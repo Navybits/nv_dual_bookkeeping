@@ -221,6 +221,7 @@ class NvSyncEngine(models.AbstractModel):
                     'account_id': mirror_account.id,
                     'name': line.name or '',
                     'quantity': line.quantity,
+                    'product_uom_id': line.product_uom_id.id,
                     'price_unit': line.price_unit,
                     'discount': line.discount,
                     'tax_ids': [(6, 0, mirror_taxes.ids)],
