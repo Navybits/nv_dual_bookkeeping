@@ -108,7 +108,7 @@ class AccountMove(models.Model):
             return True
         partner_id = self.env.context.get('default_partner_id')
         if partner_id:
-            partner = self.env['res.partner'].browse(partner_id)
+            partner = self.env['res.partner'].sudo().browse(partner_id)
             return partner.is_official
         param = self.env['ir.config_parameter'].sudo().get_param(
             'nv_dual_bookkeeping.default_is_official', 'False'
