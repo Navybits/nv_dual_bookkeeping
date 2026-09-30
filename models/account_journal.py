@@ -59,6 +59,40 @@ class AccountJournal(models.Model):
         store=False,
     )
 
+    use_numeric_sequence = fields.Boolean(
+        string='Use Numeric-Only Sequence (YYFNNNNNN)',
+        help=(
+            'When enabled, entries are numbered as YYFNNNNNN with no separators '
+            '(e.g. 261000001 = year 26, Official flag 1, counter 000001), instead '
+            'of the PREFIX/YYYY/NNNN format above. Resets to 000001 every new year. '
+            'Independent of seq_prefix_o/seq_prefix_no, which are ignored while this is on.'
+        ),
+    )
+    numeric_seq_continue_from_o = fields.Integer(
+        string='Continue From (Official)',
+        help=(
+            'One-time migration value: the LAST number already used in the old '
+            'external system for Official entries this year (e.g. 99724). The '
+            'next entry created here will continue as 99725. Leave at 0 to start '
+            'a fresh counter at 000001. Only matters until the first entry is '
+            'posted - after that, Odoo continues from its own posted entries.'
+        ),
+    )
+    numeric_seq_continue_from_no = fields.Integer(
+        string='Continue From (Non-Official)',
+        help='Same as above, for Non-Official entries.',
+    )
+    numeric_seq_preview_o = fields.Char(
+        string='Next Official Entry (Numeric)',
+        compute='_compute_numeric_seq_previews',
+        store=False,
+    )
+    numeric_seq_preview_no = fields.Char(
+        string='Next Non-Official Entry (Numeric)',
+        compute='_compute_numeric_seq_previews',
+        store=False,
+    )
+
     # -------------------------------------------------------------------------
     # Computed fields
     # -------------------------------------------------------------------------
@@ -83,6 +117,16 @@ class AccountJournal(models.Model):
                 ], order='sequence_number desc', limit=1)
                 next_num = (last_move.sequence_number + 1) if last_move else 1
                 journal[result_field] = '%s%04d' % (seq_prefix, next_num)
+
+    @api.depends('use_numeric_sequence', 'numeric_seq_continue_from_o', 'numeric_seq_continue_from_no')
+    def _compute_numeric_seq_previews(self):
+        for journal in self:
+            if not journal.use_numeric_sequence:
+                journal.numeric_seq_preview_o = ''
+                journal.numeric_seq_preview_no = ''
+                continue
+            journal.numeric_seq_preview_o = self.env['account.move']._preview_next_numeric_sequence(journal, is_official=True)
+            journal.numeric_seq_preview_no = self.env['account.move']._preview_next_numeric_sequence(journal, is_official=False)
 
     # -------------------------------------------------------------------------
     # Cross-company read helpers

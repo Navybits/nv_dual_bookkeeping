@@ -261,14 +261,84 @@ class AccountMove(models.Model):
 
         Mirror entries are the only special case: they represent the SAME
         transaction as their source, so they reuse the source name without
-        consuming a new slot. Everything else is delegated to Odoo's native
-        locking/incrementing mechanism via super().
+        consuming a new slot. Numeric-only journals (use_numeric_sequence)
+        get their own fully custom YYFNNNNNN computation - Odoo's native
+        regex-based sequence parsing can't reliably split a delimiter-less
+        number into prefix/counter, so we bypass it entirely for those -
+        but ONLY for Customer Invoices (move_type == 'out_invoice').
+        Credit Notes and everything else keep Odoo's normal behaviour
+        untouched (the existing slash-based/native sequence logic below),
+        even on a journal with use_numeric_sequence enabled.
         """
         self.ensure_one()
         if self.is_mirror and self.source_move_ref:
             self.name = self.source_move_ref
             return
+        if self.journal_id.use_numeric_sequence and self.move_type == 'out_invoice':
+            self.name = self._get_next_numeric_sequence_number()
+            return
         return super()._set_next_sequence()
+
+    # -------------------------------------------------------------------------
+    # Numeric-only sequence (YYFNNNNNN) - see account_journal.py use_numeric_sequence
+    # -------------------------------------------------------------------------
+
+    def _get_numeric_sequence_stream_prefix(self, is_official, move_date=None):
+        move_date = move_date or self.date or self.invoice_date or fields.Date.context_today(self)
+        return '%02d%s' % (move_date.year % 100, '1' if is_official else '2')
+
+    def _find_highest_numeric_sequence(self, journal, is_official, stream_prefix):
+        """
+        Highest existing number for this year+flag stream, checked both in
+        this journal and - for Official entries - the official company's
+        mapped journal too, mirroring the cross-company collision check
+        that _get_last_sequence() already does for the slash-based format.
+        """
+        domain = [
+            ('company_id', '=', journal.company_id.id),
+            ('journal_id', '=', journal.id),
+            ('is_official', '=', is_official),
+            ('name', '=like', '%s______' % stream_prefix),
+            ('state', '=', 'posted'),
+        ]
+        move = self.env['account.move'].sudo().search(domain, order='name desc', limit=1)
+        highest = int(move.name[len(stream_prefix):]) if move else 0
+
+        if is_official:
+            official_journal = journal.sudo().official_journal_id
+            if official_journal:
+                official_move = self.env['account.move'].sudo().search([
+                    ('company_id', '=', official_journal.company_id.id),
+                    ('journal_id', '=', official_journal.id),
+                    ('is_official', '=', True),
+                    ('name', '=like', '%s______' % stream_prefix),
+                    ('state', '=', 'posted'),
+                ], order='name desc', limit=1)
+                if official_move:
+                    highest = max(highest, int(official_move.name[len(stream_prefix):]))
+        return highest
+
+    def _get_next_numeric_sequence_number(self):
+        self.ensure_one()
+        journal = self.journal_id
+        stream_prefix = self._get_numeric_sequence_stream_prefix(self.is_official)
+        highest = self._find_highest_numeric_sequence(journal, self.is_official, stream_prefix)
+        if not highest:
+            highest = (
+                journal.numeric_seq_continue_from_o if self.is_official
+                else journal.numeric_seq_continue_from_no
+            ) or 0
+        return '%s%06d' % (stream_prefix, highest + 1)
+
+    @api.model
+    def _preview_next_numeric_sequence(self, journal, is_official):
+        """Used by account_journal.py's preview fields (read-only, no move needed)."""
+        move_date = fields.Date.context_today(self)
+        stream_prefix = '%02d%s' % (move_date.year % 100, '1' if is_official else '2')
+        highest = self._find_highest_numeric_sequence(journal, is_official, stream_prefix)
+        if not highest:
+            highest = (journal.numeric_seq_continue_from_o if is_official else journal.numeric_seq_continue_from_no) or 0
+        return '%s%06d' % (stream_prefix, highest + 1)
 
     # -------------------------------------------------------------------------
     # Create override — set is_official from partner when creating from SO/PO

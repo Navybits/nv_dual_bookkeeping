@@ -25,7 +25,9 @@
                         </group>
                     </group>
 
-                    <group string="Sequences" col="2">
+                    <field name="use_numeric_sequence"/>
+
+                    <group string="Sequences" col="2" invisible="use_numeric_sequence">
                         <group string="Official (O)">
                             <field name="seq_prefix_o" placeholder="e.g. BANK-O"/>
                             <field name="seq_preview_o" readonly="1"/>
@@ -33,6 +35,17 @@
                         <group string="Non-Official (NO)">
                             <field name="seq_prefix_no" placeholder="e.g. BANK-NO"/>
                             <field name="seq_preview_no" readonly="1"/>
+                        </group>
+                    </group>
+
+                    <group string="Numeric Sequence (YYFNNNNNN)" col="2" invisible="not use_numeric_sequence">
+                        <group string="Official (O)">
+                            <field name="numeric_seq_continue_from_o"/>
+                            <field name="numeric_seq_preview_o" readonly="1"/>
+                        </group>
+                        <group string="Non-Official (NO)">
+                            <field name="numeric_seq_continue_from_no"/>
+                            <field name="numeric_seq_preview_no" readonly="1"/>
                         </group>
                     </group>
 
