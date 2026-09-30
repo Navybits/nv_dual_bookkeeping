@@ -1,6 +1,8 @@
 ﻿import logging
+from psycopg2 import errors as pgerrors
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError, AccessError
+from odoo.tools import SQL
 
 _logger = logging.getLogger(__name__)
 
@@ -323,13 +325,41 @@ class AccountMove(models.Model):
         journal = self.journal_id
         move_date = self.date or self.invoice_date or fields.Date.context_today(self)
         stream_prefix = self._get_numeric_sequence_stream_prefix(self.is_official, move_date)
+        self.flush_recordset()
         highest = self._find_highest_numeric_sequence(journal, self.is_official, stream_prefix)
         if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (
                 journal.numeric_seq_continue_from_o if self.is_official
                 else journal.numeric_seq_continue_from_no
             ) or 0
-        return '%s%06d' % (stream_prefix, highest + 1)
+        return self._locked_increment_numeric(stream_prefix, highest)
+
+    def _locked_increment_numeric(self, stream_prefix, highest):
+        """
+        Mirrors sequence.mixin._locked_increment(): a plain search-then-assign
+        is vulnerable to two invoices computing the same "next" number when
+        posted close together (e.g. in the same batch/transaction, before
+        either is visible as 'posted' to the other's search) - this instead
+        tries to claim the candidate number directly against the database and
+        retries with the next one on a collision, exactly like Odoo's own
+        sequence engine does for the standard PREFIX/YYYY/NNNN format.
+        """
+        self.ensure_one()
+        seq = highest
+        with self.env.cr.savepoint(flush=False) as sp:
+            while True:
+                seq += 1
+                candidate = '%s%06d' % (stream_prefix, seq)
+                try:
+                    self.env.cr.execute(SQL(
+                        "UPDATE %(table)s SET name = %(name)s WHERE id = %(id)s",
+                        table=SQL.identifier(self._table),
+                        name=candidate,
+                        id=self.id,
+                    ), log_exceptions=False)
+                    return candidate
+                except (pgerrors.UniqueViolation, pgerrors.ExclusionViolation):
+                    sp.rollback()
 
     @api.model
     def _preview_next_numeric_sequence(self, journal, is_official):
