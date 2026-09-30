@@ -68,14 +68,23 @@ class AccountJournal(models.Model):
             'Independent of seq_prefix_o/seq_prefix_no, which are ignored while this is on.'
         ),
     )
+    numeric_seq_continue_from_year = fields.Integer(
+        string='Continue From - Year',
+        help=(
+            'The year the two "Continue From" numbers below apply to (e.g. 2026, '
+            'the current migration/transition year). Only invoices dated in THIS '
+            'year use those numbers - any other year (2027, 2028, ...) always '
+            'starts fresh at 000001, even if nothing has been posted for it yet.'
+        ),
+    )
     numeric_seq_continue_from_o = fields.Integer(
         string='Continue From (Official)',
         help=(
             'One-time migration value: the LAST number already used in the old '
-            'external system for Official entries this year (e.g. 99724). The '
-            'next entry created here will continue as 99725. Leave at 0 to start '
-            'a fresh counter at 000001. Only matters until the first entry is '
-            'posted - after that, Odoo continues from its own posted entries.'
+            'external system for Official entries in the year above (e.g. 99724). '
+            'The next entry created here will continue as 99725. Only matters '
+            'until the first entry is posted for that year - after that, Odoo '
+            'continues from its own posted entries.'
         ),
     )
     numeric_seq_continue_from_no = fields.Integer(
@@ -118,7 +127,7 @@ class AccountJournal(models.Model):
                 next_num = (last_move.sequence_number + 1) if last_move else 1
                 journal[result_field] = '%s%04d' % (seq_prefix, next_num)
 
-    @api.depends('use_numeric_sequence', 'numeric_seq_continue_from_o', 'numeric_seq_continue_from_no')
+    @api.depends('use_numeric_sequence', 'numeric_seq_continue_from_year', 'numeric_seq_continue_from_o', 'numeric_seq_continue_from_no')
     def _compute_numeric_seq_previews(self):
         for journal in self:
             if not journal.use_numeric_sequence:

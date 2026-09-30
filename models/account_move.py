@@ -321,9 +321,10 @@ class AccountMove(models.Model):
     def _get_next_numeric_sequence_number(self):
         self.ensure_one()
         journal = self.journal_id
-        stream_prefix = self._get_numeric_sequence_stream_prefix(self.is_official)
+        move_date = self.date or self.invoice_date or fields.Date.context_today(self)
+        stream_prefix = self._get_numeric_sequence_stream_prefix(self.is_official, move_date)
         highest = self._find_highest_numeric_sequence(journal, self.is_official, stream_prefix)
-        if not highest:
+        if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (
                 journal.numeric_seq_continue_from_o if self.is_official
                 else journal.numeric_seq_continue_from_no
@@ -336,7 +337,7 @@ class AccountMove(models.Model):
         move_date = fields.Date.context_today(self)
         stream_prefix = '%02d%s' % (move_date.year % 100, '1' if is_official else '2')
         highest = self._find_highest_numeric_sequence(journal, is_official, stream_prefix)
-        if not highest:
+        if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (journal.numeric_seq_continue_from_o if is_official else journal.numeric_seq_continue_from_no) or 0
         return '%s%06d' % (stream_prefix, highest + 1)
 
