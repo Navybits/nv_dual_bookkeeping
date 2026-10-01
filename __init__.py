@@ -40,9 +40,9 @@ def post_init_hook(env):
         code = (journal.code or 'JNL').upper()
         updates = {}
         if not journal.seq_prefix_o:
-            updates['seq_prefix_o'] = '%s-O' % code
+            updates['seq_prefix_o'] = '%s/1' % code
         if not journal.seq_prefix_no:
-            updates['seq_prefix_no'] = '%s-NO' % code
+            updates['seq_prefix_no'] = '%s/2' % code
         if updates:
             journal.write(updates)
             updated += 1

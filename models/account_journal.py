@@ -193,10 +193,10 @@ class AccountJournal(models.Model):
             updates = {}
             if not journal.seq_prefix_o:
                 code = (journal.code or 'JNL').upper()
-                updates['seq_prefix_o'] = '%s-O' % code
+                updates['seq_prefix_o'] = '%s/1' % code
             if not journal.seq_prefix_no:
                 code = (journal.code or 'JNL').upper()
-                updates['seq_prefix_no'] = '%s-NO' % code
+                updates['seq_prefix_no'] = '%s/2' % code
             if updates:
                 journal.sudo().write(updates)
         return journals

@@ -244,7 +244,15 @@ class AccountMove(models.Model):
         EXTENDS account sequence.mixin.
 
         Seeds the very first name for each stream in a given journal/period.
-        Returns PREFIX/YYYY/0000 — Odoo increments to /0001 on the first post.
+        Returns PREFIX/YY/000000 — Odoo increments to /000001 on first post.
+        2-digit year (not 4) is safe here specifically BECAUSE there is
+        always a non-digit separator ('/') immediately before and after it -
+        Odoo's own regex-based continuation needs that separator to reliably
+        tell the year apart from the prefix/counter; this is NOT safe for a
+        flag digit glued directly onto the year with no separator (e.g.
+        PREFIX/126/NNNNNN) - see the numeric-sequence engine below, which
+        exists specifically to handle that combined-digit case safely
+        instead of relying on this regex-based approach.
 
         Falls back to super() if the journal has no prefix configured, so that
         journals not set up for dual bookkeeping are completely unaffected.
@@ -263,7 +271,7 @@ class AccountMove(models.Model):
             if not prefix:
                 return super()._get_starting_sequence()
         move_date = self.date or self.invoice_date or fields.Date.context_today(self)
-        return '%s/%04d/0000' % (prefix, move_date.year)
+        return '%s/%02d/000000' % (prefix, move_date.year % 100)
 
     def _set_next_sequence(self):
         """
@@ -271,176 +279,176 @@ class AccountMove(models.Model):
 
         Mirror entries are the only special case: they represent the SAME
         transaction as their source, so they reuse the source name without
-        consuming a new slot. Numeric-only journals (use_numeric_sequence)
-        get their own fully custom CODE/FYY/NNNNNN computation - Odoo's
-        native regex-based sequence parsing can't reliably split a
-        delimiter-less number into prefix/counter, so we bypass it
-        entirely for those - applies to EVERY move type on that journal
-        (Invoices, Bills, Refunds, Journal Entries, and the underlying
-        entries behind Payments). Refunds (out_refund/in_refund) get an R
-        prepended to the journal code instead of the old -O/-NO suffix -
-        see _get_numeric_sequence_name_prefix; every other type uses the
-        plain journal code. Each move type counts independently (Invoices
-        and Refunds never share a counter, etc.) via the move_types filter
-        in _find_highest_numeric_sequence. Journals without
-        use_numeric_sequence enabled are completely unaffected.
+        consuming a new slot. Everything else is delegated to Odoo's native
+        locking/incrementing mechanism via super(), which now reliably
+        produces PREFIX/YY/NNNNNN since _get_starting_sequence() above keeps
+        the required separator around the year.
+
+        DISABLED (not removed) below: the numeric-only CODE/FYY/NNNNNN
+        engine (a digit flag glued directly onto the year, e.g. INV/126/...,
+        with no separator between them) - kept for reference/possible future
+        use, but currently inactive. See _get_starting_sequence()'s
+        docstring for why that combined-digit format needs this separate
+        engine instead of Odoo's regex-based continuation.
         """
         self.ensure_one()
         if self.is_mirror and self.source_move_ref:
             self.name = self.source_move_ref
             return
-        if self.journal_id.use_numeric_sequence:
-            self.name = self._get_next_numeric_sequence_number()
-            return
+        # if self.journal_id.use_numeric_sequence:
+        #     self.name = self._get_next_numeric_sequence_number()
+        #     return
         return super()._set_next_sequence()
 
-    @api.depends('journal_id.use_numeric_sequence', 'is_official')
-    def _compute_name_placeholder(self):
-        """
-        EXTENDS account.move.
-
-        Odoo computes the greyed-out "what the number will look like"
-        placeholder shown on a draft move via _get_starting_sequence(),
-        a completely separate code path from _set_next_sequence() above -
-        so without this override, a draft on a numeric-sequence journal
-        would misleadingly preview the OLD PREFIX/YYYY/NNNN format while
-        actually posting with CODE/FYY/NNNNNN. This recomputes the
-        placeholder the same way the real number will be computed,
-        read-only (no DB write, unlike _get_next_numeric_sequence_number).
-        """
-        super()._compute_name_placeholder()
-        for move in self:
-            if not move.journal_id.use_numeric_sequence:
-                continue
-            if move.name and move.name != '/':
-                continue
-            move_date = move.date or move.invoice_date or fields.Date.context_today(move)
-            flag_year = move._get_numeric_sequence_flag_year(move.is_official, move_date)
-            name_prefix = move._get_numeric_sequence_name_prefix(move.journal_id, move.is_official, move_date)
-            highest = move._find_highest_numeric_sequence(move.journal_id, move.is_official, flag_year, [move.move_type])
-            if not highest and move_date.year == move.journal_id.numeric_seq_continue_from_year:
-                highest = (
-                    move.journal_id.numeric_seq_continue_from_o if move.is_official
-                    else move.journal_id.numeric_seq_continue_from_no
-                ) or 0
-            move.name_placeholder = '%s%06d' % (name_prefix, highest + 1)
-
     # -------------------------------------------------------------------------
-    # Numeric sequence (CODE/FYY/NNNNNN) - see account_journal.py use_numeric_sequence
+    # DISABLED (not removed) - numeric-only sequence engine (CODE/FYY/NNNNNN,
+    # e.g. INV/126/000001 with the flag digit glued directly onto the year,
+    # no separator between them). Superseded by the PREFIX/YY/NNNNNN approach
+    # in _get_starting_sequence() above, which gets the same effective result
+    # (short year, long counter) while staying inside Odoo's native
+    # regex-based continuation logic. Kept here, commented out, in case this
+    # engine is needed again later.
+    # -------------------------------------------------------------------------
+
+    # @api.depends('journal_id.use_numeric_sequence', 'is_official')
+    # def _compute_name_placeholder(self):
+    #     """
+    #     EXTENDS account.move.
     #
-    # e.g. INV/126/000001 = journal code "INV" / Official(1)+year(26) / counter.
-    # Each journal uses ITS OWN code (journal.code), so this works unchanged
-    # for any journal that turns the toggle on, not just Sales/Invoices.
-    # -------------------------------------------------------------------------
+    #     Odoo computes the greyed-out "what the number will look like"
+    #     placeholder shown on a draft move via _get_starting_sequence(),
+    #     a completely separate code path from _set_next_sequence() above -
+    #     so without this override, a draft on a numeric-sequence journal
+    #     would misleadingly preview the OLD PREFIX/YYYY/NNNN format while
+    #     actually posting with CODE/FYY/NNNNNN. This recomputes the
+    #     placeholder the same way the real number will be computed,
+    #     read-only (no DB write, unlike _get_next_numeric_sequence_number).
+    #     """
+    #     super()._compute_name_placeholder()
+    #     for move in self:
+    #         if not move.journal_id.use_numeric_sequence:
+    #             continue
+    #         if move.name and move.name != '/':
+    #             continue
+    #         move_date = move.date or move.invoice_date or fields.Date.context_today(move)
+    #         flag_year = move._get_numeric_sequence_flag_year(move.is_official, move_date)
+    #         name_prefix = move._get_numeric_sequence_name_prefix(move.journal_id, move.is_official, move_date)
+    #         highest = move._find_highest_numeric_sequence(move.journal_id, move.is_official, flag_year, [move.move_type])
+    #         if not highest and move_date.year == move.journal_id.numeric_seq_continue_from_year:
+    #             highest = (
+    #                 move.journal_id.numeric_seq_continue_from_o if move.is_official
+    #                 else move.journal_id.numeric_seq_continue_from_no
+    #             ) or 0
+    #         move.name_placeholder = '%s%06d' % (name_prefix, highest + 1)
 
-    def _get_numeric_sequence_flag_year(self, is_official, move_date=None):
-        move_date = move_date or self.date or self.invoice_date or fields.Date.context_today(self)
-        return '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
+    # def _get_numeric_sequence_flag_year(self, is_official, move_date=None):
+    #     move_date = move_date or self.date or self.invoice_date or fields.Date.context_today(self)
+    #     return '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
 
-    def _get_numeric_sequence_name_prefix(self, journal, is_official, move_date=None):
-        flag_year = self._get_numeric_sequence_flag_year(is_official, move_date)
-        code = journal.code or 'INV'
-        if self.move_type in ('out_refund', 'in_refund'):
-            code = 'R%s' % code
-        return '%s/%s/' % (code, flag_year)
+    # def _get_numeric_sequence_name_prefix(self, journal, is_official, move_date=None):
+    #     flag_year = self._get_numeric_sequence_flag_year(is_official, move_date)
+    #     code = journal.code or 'INV'
+    #     if self.move_type in ('out_refund', 'in_refund'):
+    #         code = 'R%s' % code
+    #     return '%s/%s/' % (code, flag_year)
 
-    def _find_highest_numeric_sequence(self, journal, is_official, flag_year, move_types):
-        """
-        Highest existing counter for this year+flag+document-type stream,
-        checked both in this journal and - for Official entries - the
-        official company's mapped journal too, mirroring the cross-company
-        collision check that _get_last_sequence() already does for the
-        slash-based format.
+    # def _find_highest_numeric_sequence(self, journal, is_official, flag_year, move_types):
+    #     """
+    #     Highest existing counter for this year+flag+document-type stream,
+    #     checked both in this journal and - for Official entries - the
+    #     official company's mapped journal too, mirroring the cross-company
+    #     collision check that _get_last_sequence() already does for the
+    #     slash-based format.
+    #
+    #     move_types restricts to the SAME document type (e.g. ['out_invoice']
+    #     or ['out_refund']) so Invoices and Credit Notes count independently
+    #     even though they share the same flag_year (INV/126/... vs
+    #     RINV/126/... must never share a counter).
+    #
+    #     Matches on '/{flag_year}/' + 6 digits ANYWHERE in the name (not
+    #     anchored to a specific journal code prefix), since a mirrored entry
+    #     in the Official company keeps the Operating company's own journal
+    #     code, which may differ from the Official journal's own code.
+    #     """
+    #     like_pattern = '%%/%s/______' % flag_year
+    #     domain = [
+    #         ('company_id', '=', journal.company_id.id),
+    #         ('journal_id', '=', journal.id),
+    #         ('is_official', '=', is_official),
+    #         ('move_type', 'in', move_types),
+    #         ('name', '=like', like_pattern),
+    #         ('state', '=', 'posted'),
+    #     ]
+    #     move = self.env['account.move'].sudo().search(domain, order='name desc', limit=1)
+    #     highest = int(move.name[-6:]) if move else 0
+    #
+    #     if is_official:
+    #         official_journal = journal.sudo().official_journal_id
+    #         if official_journal:
+    #             official_move = self.env['account.move'].sudo().search([
+    #                 ('company_id', '=', official_journal.company_id.id),
+    #                 ('journal_id', '=', official_journal.id),
+    #                 ('is_official', '=', True),
+    #                 ('move_type', 'in', move_types),
+    #                 ('name', '=like', like_pattern),
+    #                 ('state', '=', 'posted'),
+    #             ], order='name desc', limit=1)
+    #             if official_move:
+    #                 highest = max(highest, int(official_move.name[-6:]))
+    #     return highest
 
-        move_types restricts to the SAME document type (e.g. ['out_invoice']
-        or ['out_refund']) so Invoices and Credit Notes count independently
-        even though they share the same flag_year (INV/126/... vs
-        RINV/126/... must never share a counter).
+    # def _get_next_numeric_sequence_number(self):
+    #     self.ensure_one()
+    #     journal = self.journal_id
+    #     move_date = self.date or self.invoice_date or fields.Date.context_today(self)
+    #     flag_year = self._get_numeric_sequence_flag_year(self.is_official, move_date)
+    #     name_prefix = self._get_numeric_sequence_name_prefix(journal, self.is_official, move_date)
+    #     self.flush_recordset()
+    #     highest = self._find_highest_numeric_sequence(journal, self.is_official, flag_year, [self.move_type])
+    #     if not highest and move_date.year == journal.numeric_seq_continue_from_year:
+    #         highest = (
+    #             journal.numeric_seq_continue_from_o if self.is_official
+    #             else journal.numeric_seq_continue_from_no
+    #         ) or 0
+    #     return self._locked_increment_numeric(name_prefix, highest)
 
-        Matches on '/{flag_year}/' + 6 digits ANYWHERE in the name (not
-        anchored to a specific journal code prefix), since a mirrored entry
-        in the Official company keeps the Operating company's own journal
-        code, which may differ from the Official journal's own code.
-        """
-        like_pattern = '%%/%s/______' % flag_year
-        domain = [
-            ('company_id', '=', journal.company_id.id),
-            ('journal_id', '=', journal.id),
-            ('is_official', '=', is_official),
-            ('move_type', 'in', move_types),
-            ('name', '=like', like_pattern),
-            ('state', '=', 'posted'),
-        ]
-        move = self.env['account.move'].sudo().search(domain, order='name desc', limit=1)
-        highest = int(move.name[-6:]) if move else 0
+    # def _locked_increment_numeric(self, name_prefix, highest):
+    #     """
+    #     Mirrors sequence.mixin._locked_increment(): a plain search-then-assign
+    #     is vulnerable to two invoices computing the same "next" number when
+    #     posted close together (e.g. in the same batch/transaction, before
+    #     either is visible as 'posted' to the other's search) - this instead
+    #     tries to claim the candidate number directly against the database and
+    #     retries with the next one on a collision, exactly like Odoo's own
+    #     sequence engine does for the standard PREFIX/YYYY/NNNN format.
+    #     """
+    #     self.ensure_one()
+    #     seq = highest
+    #     with self.env.cr.savepoint(flush=False) as sp:
+    #         while True:
+    #             seq += 1
+    #             candidate = '%s%06d' % (name_prefix, seq)
+    #             try:
+    #                 self.env.cr.execute(SQL(
+    #                     "UPDATE %(table)s SET name = %(name)s WHERE id = %(id)s",
+    #                     table=SQL.identifier(self._table),
+    #                     name=candidate,
+    #                     id=self.id,
+    #                 ), log_exceptions=False)
+    #                 return candidate
+    #             except (pgerrors.UniqueViolation, pgerrors.ExclusionViolation):
+    #                 sp.rollback()
 
-        if is_official:
-            official_journal = journal.sudo().official_journal_id
-            if official_journal:
-                official_move = self.env['account.move'].sudo().search([
-                    ('company_id', '=', official_journal.company_id.id),
-                    ('journal_id', '=', official_journal.id),
-                    ('is_official', '=', True),
-                    ('move_type', 'in', move_types),
-                    ('name', '=like', like_pattern),
-                    ('state', '=', 'posted'),
-                ], order='name desc', limit=1)
-                if official_move:
-                    highest = max(highest, int(official_move.name[-6:]))
-        return highest
-
-    def _get_next_numeric_sequence_number(self):
-        self.ensure_one()
-        journal = self.journal_id
-        move_date = self.date or self.invoice_date or fields.Date.context_today(self)
-        flag_year = self._get_numeric_sequence_flag_year(self.is_official, move_date)
-        name_prefix = self._get_numeric_sequence_name_prefix(journal, self.is_official, move_date)
-        self.flush_recordset()
-        highest = self._find_highest_numeric_sequence(journal, self.is_official, flag_year, [self.move_type])
-        if not highest and move_date.year == journal.numeric_seq_continue_from_year:
-            highest = (
-                journal.numeric_seq_continue_from_o if self.is_official
-                else journal.numeric_seq_continue_from_no
-            ) or 0
-        return self._locked_increment_numeric(name_prefix, highest)
-
-    def _locked_increment_numeric(self, name_prefix, highest):
-        """
-        Mirrors sequence.mixin._locked_increment(): a plain search-then-assign
-        is vulnerable to two invoices computing the same "next" number when
-        posted close together (e.g. in the same batch/transaction, before
-        either is visible as 'posted' to the other's search) - this instead
-        tries to claim the candidate number directly against the database and
-        retries with the next one on a collision, exactly like Odoo's own
-        sequence engine does for the standard PREFIX/YYYY/NNNN format.
-        """
-        self.ensure_one()
-        seq = highest
-        with self.env.cr.savepoint(flush=False) as sp:
-            while True:
-                seq += 1
-                candidate = '%s%06d' % (name_prefix, seq)
-                try:
-                    self.env.cr.execute(SQL(
-                        "UPDATE %(table)s SET name = %(name)s WHERE id = %(id)s",
-                        table=SQL.identifier(self._table),
-                        name=candidate,
-                        id=self.id,
-                    ), log_exceptions=False)
-                    return candidate
-                except (pgerrors.UniqueViolation, pgerrors.ExclusionViolation):
-                    sp.rollback()
-
-    @api.model
-    def _preview_next_numeric_sequence(self, journal, is_official):
-        """Used by account_journal.py's preview fields (read-only, no move needed)."""
-        move_date = fields.Date.context_today(self)
-        flag_year = '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
-        name_prefix = '%s/%s/' % (journal.code or 'INV', flag_year)
-        highest = self._find_highest_numeric_sequence(journal, is_official, flag_year, ['out_invoice'])
-        if not highest and move_date.year == journal.numeric_seq_continue_from_year:
-            highest = (journal.numeric_seq_continue_from_o if is_official else journal.numeric_seq_continue_from_no) or 0
-        return '%s%06d' % (name_prefix, highest + 1)
+    # @api.model
+    # def _preview_next_numeric_sequence(self, journal, is_official):
+    #     """Used by account_journal.py's preview fields (read-only, no move needed)."""
+    #     move_date = fields.Date.context_today(self)
+    #     flag_year = '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
+    #     name_prefix = '%s/%s/' % (journal.code or 'INV', flag_year)
+    #     highest = self._find_highest_numeric_sequence(journal, is_official, flag_year, ['out_invoice'])
+    #     if not highest and move_date.year == journal.numeric_seq_continue_from_year:
+    #         highest = (journal.numeric_seq_continue_from_o if is_official else journal.numeric_seq_continue_from_no) or 0
+    #     return '%s%06d' % (name_prefix, highest + 1)
 
     # -------------------------------------------------------------------------
     # Create override — set is_official from partner when creating from SO/PO
