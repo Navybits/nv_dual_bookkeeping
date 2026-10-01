@@ -134,13 +134,20 @@ class AccountJournal(models.Model):
 
     @api.depends('use_numeric_sequence', 'numeric_seq_continue_from_year', 'numeric_seq_continue_from_o', 'numeric_seq_continue_from_no')
     def _compute_numeric_seq_previews(self):
+        # DISABLED (not removed) - the numeric sequence engine this called
+        # into (account.move._preview_next_numeric_sequence) is commented
+        # out, since that whole approach was superseded by the
+        # PREFIX/YY/NNNNNN style now built into _get_starting_sequence().
+        # Always blank while use_numeric_sequence stays inactive.
         for journal in self:
-            if not journal.use_numeric_sequence:
-                journal.numeric_seq_preview_o = ''
-                journal.numeric_seq_preview_no = ''
-                continue
-            journal.numeric_seq_preview_o = self.env['account.move']._preview_next_numeric_sequence(journal, is_official=True)
-            journal.numeric_seq_preview_no = self.env['account.move']._preview_next_numeric_sequence(journal, is_official=False)
+            journal.numeric_seq_preview_o = ''
+            journal.numeric_seq_preview_no = ''
+            # if not journal.use_numeric_sequence:
+            #     journal.numeric_seq_preview_o = ''
+            #     journal.numeric_seq_preview_no = ''
+            #     continue
+            # journal.numeric_seq_preview_o = self.env['account.move']._preview_next_numeric_sequence(journal, is_official=True)
+            # journal.numeric_seq_preview_no = self.env['account.move']._preview_next_numeric_sequence(journal, is_official=False)
 
     # -------------------------------------------------------------------------
     # Cross-company read helpers
