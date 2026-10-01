@@ -275,17 +275,19 @@ class AccountMove(models.Model):
         get their own fully custom CODE/FYY/NNNNNN computation - Odoo's
         native regex-based sequence parsing can't reliably split a
         delimiter-less number into prefix/counter, so we bypass it
-        entirely for those - but ONLY for Customer Invoices
-        (move_type == 'out_invoice'). Credit Notes and everything else
-        keep Odoo's normal behaviour untouched (the existing slash-based/
-        native sequence logic below), even on a journal with
-        use_numeric_sequence enabled.
+        entirely for those - for Customer Invoices (out_invoice) AND
+        Customer Credit Notes (out_refund, which get an R prepended to
+        the journal code instead of the old -O/-NO suffix - see
+        _get_numeric_sequence_name_prefix). Everything else keeps Odoo's
+        normal behaviour untouched (the existing slash-based/native
+        sequence logic below), even on a journal with use_numeric_sequence
+        enabled.
         """
         self.ensure_one()
         if self.is_mirror and self.source_move_ref:
             self.name = self.source_move_ref
             return
-        if self.journal_id.use_numeric_sequence and self.move_type == 'out_invoice':
+        if self.journal_id.use_numeric_sequence and self.move_type in ('out_invoice', 'out_refund'):
             self.name = self._get_next_numeric_sequence_number()
             return
         return super()._set_next_sequence()
@@ -306,14 +308,14 @@ class AccountMove(models.Model):
         """
         super()._compute_name_placeholder()
         for move in self:
-            if not (move.journal_id.use_numeric_sequence and move.move_type == 'out_invoice'):
+            if not (move.journal_id.use_numeric_sequence and move.move_type in ('out_invoice', 'out_refund')):
                 continue
             if move.name and move.name != '/':
                 continue
             move_date = move.date or move.invoice_date or fields.Date.context_today(move)
             flag_year = move._get_numeric_sequence_flag_year(move.is_official, move_date)
             name_prefix = move._get_numeric_sequence_name_prefix(move.journal_id, move.is_official, move_date)
-            highest = move._find_highest_numeric_sequence(move.journal_id, move.is_official, flag_year)
+            highest = move._find_highest_numeric_sequence(move.journal_id, move.is_official, flag_year, [move.move_type])
             if not highest and move_date.year == move.journal_id.numeric_seq_continue_from_year:
                 highest = (
                     move.journal_id.numeric_seq_continue_from_o if move.is_official
@@ -335,14 +337,23 @@ class AccountMove(models.Model):
 
     def _get_numeric_sequence_name_prefix(self, journal, is_official, move_date=None):
         flag_year = self._get_numeric_sequence_flag_year(is_official, move_date)
-        return '%s/%s/' % (journal.code or 'INV', flag_year)
+        code = journal.code or 'INV'
+        if self.move_type in ('out_refund', 'in_refund'):
+            code = 'R%s' % code
+        return '%s/%s/' % (code, flag_year)
 
-    def _find_highest_numeric_sequence(self, journal, is_official, flag_year):
+    def _find_highest_numeric_sequence(self, journal, is_official, flag_year, move_types):
         """
-        Highest existing counter for this year+flag stream, checked both in
-        this journal and - for Official entries - the official company's
-        mapped journal too, mirroring the cross-company collision check
-        that _get_last_sequence() already does for the slash-based format.
+        Highest existing counter for this year+flag+document-type stream,
+        checked both in this journal and - for Official entries - the
+        official company's mapped journal too, mirroring the cross-company
+        collision check that _get_last_sequence() already does for the
+        slash-based format.
+
+        move_types restricts to the SAME document type (e.g. ['out_invoice']
+        or ['out_refund']) so Invoices and Credit Notes count independently
+        even though they share the same flag_year (INV/126/... vs
+        RINV/126/... must never share a counter).
 
         Matches on '/{flag_year}/' + 6 digits ANYWHERE in the name (not
         anchored to a specific journal code prefix), since a mirrored entry
@@ -354,6 +365,7 @@ class AccountMove(models.Model):
             ('company_id', '=', journal.company_id.id),
             ('journal_id', '=', journal.id),
             ('is_official', '=', is_official),
+            ('move_type', 'in', move_types),
             ('name', '=like', like_pattern),
             ('state', '=', 'posted'),
         ]
@@ -367,6 +379,7 @@ class AccountMove(models.Model):
                     ('company_id', '=', official_journal.company_id.id),
                     ('journal_id', '=', official_journal.id),
                     ('is_official', '=', True),
+                    ('move_type', 'in', move_types),
                     ('name', '=like', like_pattern),
                     ('state', '=', 'posted'),
                 ], order='name desc', limit=1)
@@ -381,7 +394,7 @@ class AccountMove(models.Model):
         flag_year = self._get_numeric_sequence_flag_year(self.is_official, move_date)
         name_prefix = self._get_numeric_sequence_name_prefix(journal, self.is_official, move_date)
         self.flush_recordset()
-        highest = self._find_highest_numeric_sequence(journal, self.is_official, flag_year)
+        highest = self._find_highest_numeric_sequence(journal, self.is_official, flag_year, [self.move_type])
         if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (
                 journal.numeric_seq_continue_from_o if self.is_official
@@ -422,7 +435,7 @@ class AccountMove(models.Model):
         move_date = fields.Date.context_today(self)
         flag_year = '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
         name_prefix = '%s/%s/' % (journal.code or 'INV', flag_year)
-        highest = self._find_highest_numeric_sequence(journal, is_official, flag_year)
+        highest = self._find_highest_numeric_sequence(journal, is_official, flag_year, ['out_invoice'])
         if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (journal.numeric_seq_continue_from_o if is_official else journal.numeric_seq_continue_from_no) or 0
         return '%s%06d' % (name_prefix, highest + 1)
