@@ -282,7 +282,7 @@ class AccountMove(models.Model):
             return
         return super()._set_next_sequence()
 
-    @api.depends('journal_id.use_numeric_sequence')
+    @api.depends('journal_id.use_numeric_sequence', 'is_official')
     def _compute_name_placeholder(self):
         """
         EXTENDS account.move.
