@@ -67,8 +67,10 @@ class AccountJournal(models.Model):
             'flag 1 + year 26, counter 000001), instead of the PREFIX/YYYY/NNNN '
             'format above. Resets to 000001 every new year. Independent of '
             'seq_prefix_o/seq_prefix_no, which are ignored while this is on. '
-            'Applies to Customer Invoices only - Credit Notes and everything '
-            'else on this journal keep the normal Odoo numbering untouched.'
+            'Applies to EVERY move type on this journal - Invoices, Bills, '
+            'Journal Entries, and Payments. Refunds/Credit Notes get an R '
+            'prepended to the code (e.g. RINV). Each move type counts '
+            'independently - Invoices and Refunds never share a counter.'
         ),
     )
     numeric_seq_continue_from_year = fields.Integer(

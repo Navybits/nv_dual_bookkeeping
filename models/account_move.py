@@ -275,19 +275,21 @@ class AccountMove(models.Model):
         get their own fully custom CODE/FYY/NNNNNN computation - Odoo's
         native regex-based sequence parsing can't reliably split a
         delimiter-less number into prefix/counter, so we bypass it
-        entirely for those - for Customer Invoices (out_invoice) AND
-        Customer Credit Notes (out_refund, which get an R prepended to
-        the journal code instead of the old -O/-NO suffix - see
-        _get_numeric_sequence_name_prefix). Everything else keeps Odoo's
-        normal behaviour untouched (the existing slash-based/native
-        sequence logic below), even on a journal with use_numeric_sequence
-        enabled.
+        entirely for those - applies to EVERY move type on that journal
+        (Invoices, Bills, Refunds, Journal Entries, and the underlying
+        entries behind Payments). Refunds (out_refund/in_refund) get an R
+        prepended to the journal code instead of the old -O/-NO suffix -
+        see _get_numeric_sequence_name_prefix; every other type uses the
+        plain journal code. Each move type counts independently (Invoices
+        and Refunds never share a counter, etc.) via the move_types filter
+        in _find_highest_numeric_sequence. Journals without
+        use_numeric_sequence enabled are completely unaffected.
         """
         self.ensure_one()
         if self.is_mirror and self.source_move_ref:
             self.name = self.source_move_ref
             return
-        if self.journal_id.use_numeric_sequence and self.move_type in ('out_invoice', 'out_refund'):
+        if self.journal_id.use_numeric_sequence:
             self.name = self._get_next_numeric_sequence_number()
             return
         return super()._set_next_sequence()
@@ -308,7 +310,7 @@ class AccountMove(models.Model):
         """
         super()._compute_name_placeholder()
         for move in self:
-            if not (move.journal_id.use_numeric_sequence and move.move_type in ('out_invoice', 'out_refund')):
+            if not move.journal_id.use_numeric_sequence:
                 continue
             if move.name and move.name != '/':
                 continue
