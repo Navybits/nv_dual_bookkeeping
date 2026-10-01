@@ -282,29 +282,43 @@ class AccountMove(models.Model):
         return super()._set_next_sequence()
 
     # -------------------------------------------------------------------------
-    # Numeric-only sequence (YYFNNNNNN) - see account_journal.py use_numeric_sequence
+    # Numeric sequence (CODE/FYY/NNNNNN) - see account_journal.py use_numeric_sequence
+    #
+    # e.g. INV/126/000001 = journal code "INV" / Official(1)+year(26) / counter.
+    # Each journal uses ITS OWN code (journal.code), so this works unchanged
+    # for any journal that turns the toggle on, not just Sales/Invoices.
     # -------------------------------------------------------------------------
 
-    def _get_numeric_sequence_stream_prefix(self, is_official, move_date=None):
+    def _get_numeric_sequence_flag_year(self, is_official, move_date=None):
         move_date = move_date or self.date or self.invoice_date or fields.Date.context_today(self)
-        return '%02d%s' % (move_date.year % 100, '1' if is_official else '2')
+        return '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
 
-    def _find_highest_numeric_sequence(self, journal, is_official, stream_prefix):
+    def _get_numeric_sequence_name_prefix(self, journal, is_official, move_date=None):
+        flag_year = self._get_numeric_sequence_flag_year(is_official, move_date)
+        return '%s/%s/' % (journal.code or 'INV', flag_year)
+
+    def _find_highest_numeric_sequence(self, journal, is_official, flag_year):
         """
-        Highest existing number for this year+flag stream, checked both in
+        Highest existing counter for this year+flag stream, checked both in
         this journal and - for Official entries - the official company's
         mapped journal too, mirroring the cross-company collision check
         that _get_last_sequence() already does for the slash-based format.
+
+        Matches on '/{flag_year}/' + 6 digits ANYWHERE in the name (not
+        anchored to a specific journal code prefix), since a mirrored entry
+        in the Official company keeps the Operating company's own journal
+        code, which may differ from the Official journal's own code.
         """
+        like_pattern = '%%/%s/______' % flag_year
         domain = [
             ('company_id', '=', journal.company_id.id),
             ('journal_id', '=', journal.id),
             ('is_official', '=', is_official),
-            ('name', '=like', '%s______' % stream_prefix),
+            ('name', '=like', like_pattern),
             ('state', '=', 'posted'),
         ]
         move = self.env['account.move'].sudo().search(domain, order='name desc', limit=1)
-        highest = int(move.name[len(stream_prefix):]) if move else 0
+        highest = int(move.name[-6:]) if move else 0
 
         if is_official:
             official_journal = journal.sudo().official_journal_id
@@ -313,28 +327,29 @@ class AccountMove(models.Model):
                     ('company_id', '=', official_journal.company_id.id),
                     ('journal_id', '=', official_journal.id),
                     ('is_official', '=', True),
-                    ('name', '=like', '%s______' % stream_prefix),
+                    ('name', '=like', like_pattern),
                     ('state', '=', 'posted'),
                 ], order='name desc', limit=1)
                 if official_move:
-                    highest = max(highest, int(official_move.name[len(stream_prefix):]))
+                    highest = max(highest, int(official_move.name[-6:]))
         return highest
 
     def _get_next_numeric_sequence_number(self):
         self.ensure_one()
         journal = self.journal_id
         move_date = self.date or self.invoice_date or fields.Date.context_today(self)
-        stream_prefix = self._get_numeric_sequence_stream_prefix(self.is_official, move_date)
+        flag_year = self._get_numeric_sequence_flag_year(self.is_official, move_date)
+        name_prefix = self._get_numeric_sequence_name_prefix(journal, self.is_official, move_date)
         self.flush_recordset()
-        highest = self._find_highest_numeric_sequence(journal, self.is_official, stream_prefix)
+        highest = self._find_highest_numeric_sequence(journal, self.is_official, flag_year)
         if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (
                 journal.numeric_seq_continue_from_o if self.is_official
                 else journal.numeric_seq_continue_from_no
             ) or 0
-        return self._locked_increment_numeric(stream_prefix, highest)
+        return self._locked_increment_numeric(name_prefix, highest)
 
-    def _locked_increment_numeric(self, stream_prefix, highest):
+    def _locked_increment_numeric(self, name_prefix, highest):
         """
         Mirrors sequence.mixin._locked_increment(): a plain search-then-assign
         is vulnerable to two invoices computing the same "next" number when
@@ -349,7 +364,7 @@ class AccountMove(models.Model):
         with self.env.cr.savepoint(flush=False) as sp:
             while True:
                 seq += 1
-                candidate = '%s%06d' % (stream_prefix, seq)
+                candidate = '%s%06d' % (name_prefix, seq)
                 try:
                     self.env.cr.execute(SQL(
                         "UPDATE %(table)s SET name = %(name)s WHERE id = %(id)s",
@@ -365,11 +380,12 @@ class AccountMove(models.Model):
     def _preview_next_numeric_sequence(self, journal, is_official):
         """Used by account_journal.py's preview fields (read-only, no move needed)."""
         move_date = fields.Date.context_today(self)
-        stream_prefix = '%02d%s' % (move_date.year % 100, '1' if is_official else '2')
-        highest = self._find_highest_numeric_sequence(journal, is_official, stream_prefix)
+        flag_year = '%s%02d' % ('1' if is_official else '2', move_date.year % 100)
+        name_prefix = '%s/%s/' % (journal.code or 'INV', flag_year)
+        highest = self._find_highest_numeric_sequence(journal, is_official, flag_year)
         if not highest and move_date.year == journal.numeric_seq_continue_from_year:
             highest = (journal.numeric_seq_continue_from_o if is_official else journal.numeric_seq_continue_from_no) or 0
-        return '%s%06d' % (stream_prefix, highest + 1)
+        return '%s%06d' % (name_prefix, highest + 1)
 
     # -------------------------------------------------------------------------
     # Create override — set is_official from partner when creating from SO/PO

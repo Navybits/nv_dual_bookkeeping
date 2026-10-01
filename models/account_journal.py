@@ -60,12 +60,15 @@ class AccountJournal(models.Model):
     )
 
     use_numeric_sequence = fields.Boolean(
-        string='Use Numeric-Only Sequence (YYFNNNNNN)',
+        string='Use CODE/FYY/NNNNNN Sequence',
         help=(
-            'When enabled, entries are numbered as YYFNNNNNN with no separators '
-            '(e.g. 261000001 = year 26, Official flag 1, counter 000001), instead '
-            'of the PREFIX/YYYY/NNNN format above. Resets to 000001 every new year. '
-            'Independent of seq_prefix_o/seq_prefix_no, which are ignored while this is on.'
+            'When enabled, entries are numbered as CODE/FYY/NNNNNN using this '
+            "journal's own short code (e.g. INV/126/000001 = code INV, Official "
+            'flag 1 + year 26, counter 000001), instead of the PREFIX/YYYY/NNNN '
+            'format above. Resets to 000001 every new year. Independent of '
+            'seq_prefix_o/seq_prefix_no, which are ignored while this is on. '
+            'Applies to Customer Invoices only - Credit Notes and everything '
+            'else on this journal keep the normal Odoo numbering untouched.'
         ),
     )
     numeric_seq_continue_from_year = fields.Integer(

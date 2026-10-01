@@ -38,7 +38,7 @@
                         </group>
                     </group>
 
-                    <group string="Numeric Sequence (YYFNNNNNN)" invisible="not use_numeric_sequence">
+                    <group string="Numeric Sequence (CODE/FYY/NNNNNN)" invisible="not use_numeric_sequence">
                         <field name="numeric_seq_continue_from_year" placeholder="e.g. 2026"/>
                     </group>
                     <group col="2" invisible="not use_numeric_sequence">
