@@ -264,13 +264,14 @@ class AccountMove(models.Model):
         Mirror entries are the only special case: they represent the SAME
         transaction as their source, so they reuse the source name without
         consuming a new slot. Numeric-only journals (use_numeric_sequence)
-        get their own fully custom YYFNNNNNN computation - Odoo's native
-        regex-based sequence parsing can't reliably split a delimiter-less
-        number into prefix/counter, so we bypass it entirely for those -
-        but ONLY for Customer Invoices (move_type == 'out_invoice').
-        Credit Notes and everything else keep Odoo's normal behaviour
-        untouched (the existing slash-based/native sequence logic below),
-        even on a journal with use_numeric_sequence enabled.
+        get their own fully custom CODE/FYY/NNNNNN computation - Odoo's
+        native regex-based sequence parsing can't reliably split a
+        delimiter-less number into prefix/counter, so we bypass it
+        entirely for those - but ONLY for Customer Invoices
+        (move_type == 'out_invoice'). Credit Notes and everything else
+        keep Odoo's normal behaviour untouched (the existing slash-based/
+        native sequence logic below), even on a journal with
+        use_numeric_sequence enabled.
         """
         self.ensure_one()
         if self.is_mirror and self.source_move_ref:
@@ -280,6 +281,37 @@ class AccountMove(models.Model):
             self.name = self._get_next_numeric_sequence_number()
             return
         return super()._set_next_sequence()
+
+    @api.depends('journal_id.use_numeric_sequence')
+    def _compute_name_placeholder(self):
+        """
+        EXTENDS account.move.
+
+        Odoo computes the greyed-out "what the number will look like"
+        placeholder shown on a draft move via _get_starting_sequence(),
+        a completely separate code path from _set_next_sequence() above -
+        so without this override, a draft on a numeric-sequence journal
+        would misleadingly preview the OLD PREFIX/YYYY/NNNN format while
+        actually posting with CODE/FYY/NNNNNN. This recomputes the
+        placeholder the same way the real number will be computed,
+        read-only (no DB write, unlike _get_next_numeric_sequence_number).
+        """
+        super()._compute_name_placeholder()
+        for move in self:
+            if not (move.journal_id.use_numeric_sequence and move.move_type == 'out_invoice'):
+                continue
+            if move.name and move.name != '/':
+                continue
+            move_date = move.date or move.invoice_date or fields.Date.context_today(move)
+            flag_year = move._get_numeric_sequence_flag_year(move.is_official, move_date)
+            name_prefix = move._get_numeric_sequence_name_prefix(move.journal_id, move.is_official, move_date)
+            highest = move._find_highest_numeric_sequence(move.journal_id, move.is_official, flag_year)
+            if not highest and move_date.year == move.journal_id.numeric_seq_continue_from_year:
+                highest = (
+                    move.journal_id.numeric_seq_continue_from_o if move.is_official
+                    else move.journal_id.numeric_seq_continue_from_no
+                ) or 0
+            move.name_placeholder = '%s%06d' % (name_prefix, highest + 1)
 
     # -------------------------------------------------------------------------
     # Numeric sequence (CODE/FYY/NNNNNN) - see account_journal.py use_numeric_sequence
