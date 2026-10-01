@@ -254,6 +254,8 @@ class AccountMove(models.Model):
         prefix = journal.seq_prefix_o if self.is_official else journal.seq_prefix_no
         if not prefix:
             return super()._get_starting_sequence()
+        if self.move_type in ('out_refund', 'in_refund'):
+            prefix = 'R%s' % prefix
         move_date = self.date or self.invoice_date or fields.Date.context_today(self)
         return '%s/%04d/0000' % (prefix, move_date.year)
 
