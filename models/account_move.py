@@ -259,15 +259,17 @@ class AccountMove(models.Model):
         """
         self.ensure_one()
         journal = self.journal_id
+        base_prefix = journal.seq_prefix_o if self.is_official else journal.seq_prefix_no
         if self.move_type in ('out_refund', 'in_refund'):
-            # Credit Notes drop the -O/-NO Official/Non-Official suffix
-            # entirely, just R + the journal's own short code (e.g. RINV) -
-            # Official vs Non-Official still count independently behind the
-            # scenes via the is_official filter in _get_last_sequence_domain,
-            # even though the visible prefix text is now identical for both.
-            prefix = 'R%s' % (journal.code or 'INV')
+            # Credit/Debit Notes reuse the SAME Official/Non-Official prefix
+            # as regular Invoices/Bills (e.g. BILL/1 or BILL/2, which already
+            # carries the flag) with just an R prepended - so a refund of an
+            # Official bill reads RBILL/1/26/000001, matching the Official
+            # flag on BILL/1/26/000001 it reverses, instead of dropping the
+            # flag entirely.
+            prefix = 'R%s' % (base_prefix or journal.code or 'INV')
         else:
-            prefix = journal.seq_prefix_o if self.is_official else journal.seq_prefix_no
+            prefix = base_prefix
             if not prefix:
                 return super()._get_starting_sequence()
         move_date = self.date or self.invoice_date or fields.Date.context_today(self)
