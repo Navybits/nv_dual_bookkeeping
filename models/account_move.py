@@ -193,9 +193,10 @@ class AccountMove(models.Model):
         This prevents collisions when entries are posted directly in the
         official company (bypassing the sync engine).
 
-        Example: Operating Co has INV-O/2026/0003. Someone posts INV-O/2026/0004
-        directly in the Official Co. Without this override the next Operating Co
-        entry would also get 0004. With this override it correctly gets 0005.
+        Example: Operating Co has INV/1/26/000003. Someone posts
+        INV/1/26/000004 directly in the Official Co. Without this override
+        the next Operating Co entry would also get 000004. With this
+        override it correctly gets 000005.
         """
         local_last = super()._get_last_sequence(relaxed=relaxed, with_prefix=with_prefix)
 
@@ -214,7 +215,7 @@ class AccountMove(models.Model):
             if not prefix:
                 return local_last
             move_date = self.date or self.invoice_date or fields.Date.context_today(self)
-            seq_prefix = '%s/%04d/' % (prefix, move_date.year)
+            seq_prefix = '%s/%02d/' % (prefix, move_date.year % 100)
 
         # Find the highest-numbered posted entry in the official company's journal
         official_last_move = self.env['account.move'].sudo().search([
