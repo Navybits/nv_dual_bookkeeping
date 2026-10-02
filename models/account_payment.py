@@ -103,6 +103,25 @@ class AccountPayment(models.Model):
             self.is_official = self.partner_id.is_official
 
     # -------------------------------------------------------------------------
+    # Create override — set is_official from partner for payments created
+    # directly in code (mirrors account.move's create() override). Without
+    # this, programmatic payment creation (e.g. nv_delivery_routes' driver
+    # cash reconciliation / cash-on-delivery payments) never fires the
+    # onchange above, silently defaults is_official to False, and the
+    # sync-to-official-company hook then never runs for them.
+    # -------------------------------------------------------------------------
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if 'is_official' not in vals and not self.env.company.is_official_company:
+                partner_id = vals.get('partner_id')
+                if partner_id:
+                    partner = self.env['res.partner'].browse(partner_id)
+                    vals['is_official'] = partner.is_official
+        return super().create(vals_list)
+
+    # -------------------------------------------------------------------------
     # Write override — mirror account.move locking logic
     # -------------------------------------------------------------------------
 
