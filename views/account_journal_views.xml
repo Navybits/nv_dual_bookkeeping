@@ -25,18 +25,34 @@
                         </group>
                     </group>
 
-                    <field name="use_numeric_sequence"/>
-
-                    <group string="Sequences" col="2" invisible="use_numeric_sequence">
+                    <!-- This group previously had invisible="use_numeric_sequence"
+                         (hidden while the numeric engine below was active).
+                         That attribute is removed here, not just commented,
+                         because the use_numeric_sequence field is no longer
+                         rendered anywhere in this view (it's inside the
+                         commented-out block below) - Odoo requires any field
+                         referenced by invisible="..." to also be present in
+                         the view, so leaving that attribute in place would
+                         break this page with a view-validation error. -->
+                    <group string="Sequences" col="2">
                         <group string="Official (O)">
-                            <field name="seq_prefix_o" placeholder="e.g. BANK-O"/>
+                            <field name="seq_prefix_o" placeholder="e.g. BANK/1"/>
                             <field name="seq_preview_o" readonly="1"/>
                         </group>
                         <group string="Non-Official (NO)">
-                            <field name="seq_prefix_no" placeholder="e.g. BANK-NO"/>
+                            <field name="seq_prefix_no" placeholder="e.g. BANK/2"/>
                             <field name="seq_preview_no" readonly="1"/>
                         </group>
                     </group>
+
+                    <!-- DISABLED (not removed) - the numeric-only sequence
+                         engine (CODE/FYY/NNNNNN) these fields configured is
+                         commented out in account_move.py, superseded by the
+                         PREFIX/YY/NNNNNN style now built into
+                         _get_starting_sequence(). Kept here for reference in
+                         case that engine is needed again later.
+
+                    <field name="use_numeric_sequence"/>
 
                     <group string="Numeric Sequence (CODE/FYY/NNNNNN)" invisible="not use_numeric_sequence">
                         <field name="numeric_seq_continue_from_year" placeholder="e.g. 2026"/>
@@ -51,6 +67,8 @@
                             <field name="numeric_seq_preview_no" readonly="1"/>
                         </group>
                     </group>
+                    -->
+
 
                     <div class="alert alert-info" role="alert"
                          invisible="official_journal_id">

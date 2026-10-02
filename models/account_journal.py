@@ -122,7 +122,9 @@ class AccountJournal(models.Model):
                 if not prefix_val:
                     journal[result_field] = ''
                     continue
-                seq_prefix = '%s/%04d/' % (prefix_val, year)
+                # 2-digit year / 6-digit counter, matching what
+                # account_move._get_starting_sequence() actually produces.
+                seq_prefix = '%s/%02d/' % (prefix_val, year % 100)
                 last_move = self.env['account.move'].sudo().search([
                     ('journal_id', '=', journal.id),
                     ('is_official', '=', is_official),
@@ -130,7 +132,7 @@ class AccountJournal(models.Model):
                     ('state', '=', 'posted'),
                 ], order='sequence_number desc', limit=1)
                 next_num = (last_move.sequence_number + 1) if last_move else 1
-                journal[result_field] = '%s%04d' % (seq_prefix, next_num)
+                journal[result_field] = '%s%06d' % (seq_prefix, next_num)
 
     @api.depends('use_numeric_sequence', 'numeric_seq_continue_from_year', 'numeric_seq_continue_from_o', 'numeric_seq_continue_from_no')
     def _compute_numeric_seq_previews(self):
