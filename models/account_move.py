@@ -214,6 +214,11 @@ class AccountMove(models.Model):
             prefix = self.journal_id.seq_prefix_o
             if not prefix:
                 return local_last
+            if self.move_type in ('out_refund', 'in_refund'):
+                # Match _get_starting_sequence()'s R-prefixed stream for
+                # Credit/Debit Notes, so this cross-company check doesn't
+                # mistake the plain Invoice stream for the last sequence.
+                prefix = 'R%s' % prefix
             move_date = self.date or self.invoice_date or fields.Date.context_today(self)
             seq_prefix = '%s/%02d/' % (prefix, move_date.year % 100)
 
