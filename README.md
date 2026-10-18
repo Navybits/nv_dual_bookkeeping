@@ -72,7 +72,7 @@ Go to **Settings → Users** and assign:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Default new transactions as Official | ✓ True | Pre-fills the O/NO toggle to Official on all new transactions |
-| Require explicit O/NO selection before posting | False | Forces the user to consciously set the flag before posting |
+| Require explicit O/NO selection before posting | False | A document whose flag was never set cannot be posted: the flag counts as set when the user clicks the toggle, when it comes from the contact, or when it is copied (Pay wizard, credit note, duplicate, mirror); documents created in code are never blocked |
 | Auto-post mirrored transactions | False | Posts mirrors automatically; **leave False** for review workflow |
 | Block direct posting in Official Company | False | Prevents any non-mirror entry being posted in the official company |
 
@@ -96,12 +96,28 @@ This means:
 
 When an Official transaction is posted in an operating company:
 
-1. Guard checks run (not a mirror, not already synced, official company configured).
-2. A mirror `account.move` is created in the official company via `sudo().with_company(official_co)`.
+1. Guard checks run (not a mirror, official company configured).
+2. A mirror `account.move` is created in the official company (sudo, official company);
+   the source keeps a link to it (**Mirror in Official Books**).
 3. Each account is matched by code in the official company's chart of accounts.
-4. The partner is matched by VAT, then name, then auto-created as a stub.
-5. A `nv.sync.log` record is written with `state='synced'`.
-6. If `auto_post_mirror=True`, the mirror is posted automatically.
+4. Each tax is matched by name and type (sale / purchase), then by amount when exactly
+   one tax of that type fits; a missing or ambiguous tax fails the sync with its name
+   (it is never dropped).
+5. The partner is matched by VAT, then name, then auto-created as a stub.
+6. A `nv.sync.log` record is written with `state='synced'` and its operation.
+7. If `auto_post_mirror=True`, the mirror is posted automatically.
+
+The mirror follows its source's life-cycle:
+
+| Source | Mirror | Log operation |
+|--------|--------|---------------|
+| Reset to draft | reset to draft, without its reconciliations (a draft mirror is kept) | Reset to Draft |
+| Posted again | the same mirror is rewritten (lines, amounts, rates, same number) and its reconciliations redone | Update |
+| Cancelled | cancelled | Cancel |
+| Deleted (draft) | deleted; refused while the mirror is posted | Delete |
+
+A reset, cancel or delete is refused, before anything changes, when the posted mirror's
+date is locked in the Official Books company.
 
 **Sync failures are non-blocking.** If the sync engine raises any exception:
 - The original posting is NOT rolled back.
@@ -122,6 +138,8 @@ When an Official transaction is posted in an operating company:
 | Column | Description |
 |--------|-------------|
 | Sync Date | When the sync was attempted |
+| Source Number | Number of the source (kept when the source is deleted) |
+| Operation | Mirror / Update / Reset to Draft / Cancel / Delete |
 | Source Transaction | Original move in the operating company (clickable) |
 | Mirror Transaction | Created move in the official company (clickable) |
 | State | Synced (green) / Error (red) / Pending (orange) |
@@ -159,6 +177,11 @@ The journal's `official_journal_id` is not set. Open the journal, go to the
 The chart of accounts in the official company is missing account `{code}`.
 Install the same chart of accounts in both companies, or manually create the
 missing account with the same code.
+
+### "Tax '{name}' (...) has no match / several matches in the Official Books company"
+The official company has no tax (or several) with the same name and type as the
+source's. Create or rename the tax there with the same name and type, then click
+**Retry** on the error record.
 
 ### Mirror not created / Sync Dashboard shows error
 1. Open the error record in the Sync Dashboard.
@@ -214,5 +237,27 @@ nv_dual_bookkeeping/
 │   └── nv_dual_bookkeeping_security.xml
 ├── data/
 │   └── nv_dual_bookkeeping_data.xml
+├── migrations/
+│   └── 19.0.1.0.2/post-mirror-links.py  # links existing mirrors to their source
+├── tests/                               # run with infra/test-module.sh ... 19
 └── README.md
 ```
+
+---
+
+## Changelog
+
+### 19.0.1.0.2 (backport of the Odoo 20 rebuild decisions D2, D6, D7)
+
+- **D2 — the mirror follows its source**: reset to draft, re-post (the same mirror is
+  rewritten), cancel and delete are propagated to the mirror, refused when the
+  mirror's period is locked in the Official Books company, and logged with their
+  operation. The migration links the existing mirrors to their source (from their
+  sync log, else by number), so a re-post never creates a second mirror.
+- **D6 — a missing tax fails the sync**: taxes matched by name and type, then by
+  amount when unique; otherwise the sync fails with the tax's name (the mirror used
+  to be created without the tax). Retry once the tax exists.
+- **D7 — "Require explicit O/NO selection" works**: the flag of a new form is unset
+  until the user clicks the toggle or picks a contact; documents created in code,
+  copies and payments of the Pay wizard (each batch in its documents' stream) count
+  as set. Documents already in the database are not affected.
