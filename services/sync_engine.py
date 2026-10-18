@@ -631,26 +631,44 @@ class NvSyncEngine(models.AbstractModel):
 
     def _get_mirror_taxes(self, taxes, target_company):
         """
-        Find equivalent taxes in target_company matched by name.
-        Returns an empty recordset (no tax) for any tax that cannot be found,
-        logging a warning so the accountant can investigate.
+        D6: the taxes of target_company matching these, each by name and type
+        (sale / purchase), else by amount, amount type and type when exactly
+        one tax fits. A tax without a single match fails the sync with a
+        UserError naming it (it used to be dropped silently: the official
+        books then showed another VAT); sync_move logs the error and Retry
+        syncs again once the tax exists.
         """
-        if not taxes:
-            return self.env['account.tax']
-        mirror_taxes = self.env['account.tax'].sudo()
-        for tax in taxes:
-            match = self.env['account.tax'].sudo().search([
-                ('name', '=', tax.name),
+        Tax = self.env['account.tax'].sudo()
+        mirror_taxes = Tax
+        for tax in taxes.sudo():
+            same_type = [
                 ('company_id', '=', target_company.id),
-            ], limit=1)
-            if match:
-                mirror_taxes |= match
-            else:
-                _logger.warning(
-                    "nv_dual_bookkeeping: Tax '%s' not found in company '%s'. "
-                    "Mirror line will have no tax applied.",
-                    tax.name, target_company.name,
-                )
+                ('type_tax_use', '=', tax.type_tax_use),
+            ]
+            same_amount = same_type + [
+                ('amount_type', '=', tax.amount_type),
+                ('amount', '=', tax.amount),
+            ]
+            matches = Tax.search(same_type + [('name', '=', tax.name)])
+            if len(matches) > 1:
+                matches = matches.filtered_domain(same_amount)
+            if not matches:
+                matches = Tax.search(same_amount)
+            if len(matches) != 1:
+                type_labels = dict(tax._fields['type_tax_use']._description_selection(self.env))
+                raise UserError(_(
+                    "Tax '%(tax)s' (%(type)s, %(amount)s) has %(problem)s in the "
+                    "Official Books company '%(company)s'.\n\n"
+                    "Create (or rename) the tax there with the same name and type, "
+                    "then sync again."
+                ) % {
+                    'tax': tax.name,
+                    'type': type_labels.get(tax.type_tax_use, tax.type_tax_use),
+                    'amount': tax.amount,
+                    'problem': _("several matches") if matches else _("no match"),
+                    'company': target_company.name,
+                })
+            mirror_taxes |= matches
         return mirror_taxes
 
     def _get_mirror_account(self, account, target_company):
