@@ -23,6 +23,8 @@
                 </header>
 
                 <field name="sync_date" string="Sync Date" readonly="1"/>
+                <field name="source_ref" readonly="1"/>
+                <field name="operation" readonly="1"/>
                 <field name="source_move_id" string="Source Transaction"
                        readonly="1" optional="show"
                        options="{'no_open': False, 'no_create': True}"/>
@@ -77,6 +79,8 @@
                                    readonly="1"/>
                             <field name="sync_date" readonly="1"/>
                             <field name="triggered_by" readonly="1"/>
+                            <field name="operation" readonly="1"/>
+                            <field name="source_ref" readonly="1"/>
                         </group>
                         <group>
                             <field name="source_company_id" readonly="1"/>
@@ -120,6 +124,7 @@
         <field name="arch" type="xml">
             <search string="Sync Logs">
 
+                <field name="source_ref"/>
                 <field name="source_move_id" string="Source Transaction"/>
                 <field name="source_company_id" string="Source Company"/>
                 <field name="target_company_id" string="Target Company"/>
@@ -146,6 +151,8 @@
                             context="{'group_by': 'source_company_id'}"/>
                     <filter string="Triggered By" name="groupby_triggered_by"
                             context="{'group_by': 'triggered_by'}"/>
+                    <filter string="Operation" name="groupby_operation"
+                            context="{'group_by': 'operation'}"/>
                 </group>
 
             </search>

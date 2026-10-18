@@ -57,6 +57,24 @@ class AccountMove(models.Model):
              "(e.g. 'BLOM-O/2026/0001'). Set on mirror entries by the sync engine.",
     )
 
+    nv_mirror_move_id = fields.Many2one(
+        comodel_name='account.move',
+        string='Mirror in Official Books',
+        readonly=True,
+        copy=False,
+        index='btree_not_null',
+        help="Set on a source transaction by the sync engine: its mirror in the "
+             "Official Books company (D2).",
+    )
+
+    nv_mirror_outdated = fields.Boolean(
+        string='Mirror Outdated',
+        readonly=True,
+        copy=False,
+        help="Set when the source was reset to draft after it was mirrored: its "
+             "mirror is rewritten when the source is synced again (D2).",
+    )
+
     sync_log_ids = fields.One2many(
         comodel_name='nv.sync.log',
         inverse_name='source_move_id',
@@ -599,6 +617,51 @@ class AccountMove(models.Model):
                             move.name, str(e),
                         )
 
+        return result
+
+    # -------------------------------------------------------------------------
+    # Life-cycle of the mirror (D2)
+    # -------------------------------------------------------------------------
+
+    def _nv_mirrored(self):
+        """The sources in self that have a mirror (sudo: the link points to
+        the official company)."""
+        return self.filtered(lambda move: move.sudo().nv_mirror_move_id)
+
+    def button_draft(self):
+        """EXTENDS account: reset to draft resets the mirror (D2), refused
+        first when the mirror's period is locked in the Official Books.
+        Also reached by account.payment.action_draft."""
+        sources = self._nv_mirrored()
+        engine = self.env['nv.sync.engine']
+        engine.check_mirror_locks(sources, _("reset to draft"))
+        result = super().button_draft()
+        engine.reset_mirrors(sources)
+        return result
+
+    def button_cancel(self):
+        """EXTENDS account: cancelling cancels the mirror (D2); Odoo resets a
+        posted entry to draft first (button_draft above). Also reached by
+        account.payment.action_cancel."""
+        sources = self._nv_mirrored()
+        engine = self.env['nv.sync.engine']
+        engine.check_mirror_locks(sources, _("cancelled"))
+        result = super().button_cancel()
+        engine.cancel_mirrors(sources)
+        return result
+
+    def unlink(self):
+        """EXTENDS account: deleting a draft source deletes its draft mirror
+        (D2); refused while the mirror is posted."""
+        sources = self._nv_mirrored().filtered(lambda move: move.state != 'posted')
+        engine = self.env['nv.sync.engine']
+        engine.check_mirrors_deletable(sources)
+        deleted = [
+            (source.name, source.company_id, source.sudo().nv_mirror_move_id)
+            for source in sources
+        ]
+        result = super().unlink()
+        engine.delete_mirrors(deleted)
         return result
 
     # -------------------------------------------------------------------------

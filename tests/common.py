@@ -57,7 +57,9 @@ class DualBookkeepingCommon(AccountTestInvoicingCommon):
             (cls.misc_journal, cls.off_misc_journal),
         ):
             journal.official_journal_id = off_journal
-        cls._setup_outstanding_accounts(cls.official, cls.off_bank_journal)
+        cls._setup_outstanding_accounts(
+            cls.official, cls.off_bank_journal, cls.bank_journal
+        )
 
         # partner_a / partner_b come from the parent set-up (Official by
         # default); a Non-Official contact:
@@ -101,22 +103,32 @@ class DualBookkeepingCommon(AccountTestInvoicingCommon):
         )
 
     @classmethod
-    def _setup_outstanding_accounts(cls, company, bank_journal):
+    def _setup_outstanding_accounts(cls, company, bank_journal, source_journal):
         """Payments of a new company need outstanding accounts on its bank
-        journal's payment methods to get a journal entry."""
+        journal's payment methods to get a journal entry. 19.0: the same codes
+        as the operating company's (the mirror payment takes its outstanding
+        account from the official journal's payment method), so both books
+        hold the same accounts."""
         env = cls.env(context=dict(cls.env.context, allowed_company_ids=company.ids))
-        for method_lines, name, code in (
+        for method_lines, source_lines, name, default_code in (
             (
                 bank_journal.inbound_payment_method_line_ids,
+                source_journal.inbound_payment_method_line_ids,
                 "Outstanding Receipts",
                 "OUTREC",
             ),
             (
                 bank_journal.outbound_payment_method_line_ids,
+                source_journal.outbound_payment_method_line_ids,
                 "Outstanding Payments",
                 "OUTPAY",
             ),
         ):
+            source_account = source_lines.payment_account_id[:1]
+            code = (
+                source_account.with_company(source_journal.company_id).code
+                or default_code
+            )
             account = env["account.account"].search(
                 [("code", "=", code), ("company_ids", "in", company.ids)], limit=1
             ) or env["account.account"].create(
@@ -234,10 +246,9 @@ class DualBookkeepingCommon(AccountTestInvoicingCommon):
         return payment
 
     def _mirror(self, move):
-        """The mirror of a source transaction, from its latest synced log
-        (sudo: the test users have no access to the official company)."""
-        logs = self._logs(move).filtered(lambda log: log.sync_state == "synced")
-        return logs[:1].target_move_id
+        """The mirror of a source transaction (sudo: the test users have no
+        access to the official company)."""
+        return move.sudo().nv_mirror_move_id
 
     def _logs(self, move):
         return self.env["nv.sync.log"].sudo().search([("source_move_id", "=", move.id)])
