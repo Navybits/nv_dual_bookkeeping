@@ -149,8 +149,10 @@ class AccountMove(models.Model):
     @api.depends('sync_log_ids', 'sync_log_ids.sync_state', 'sync_log_ids.sync_date')
     def _compute_sync_state(self):
         for move in self:
-            logs = move.sync_log_ids.sorted('sync_date', reverse=True)
-            move.sync_state = logs[0].sync_state if logs else False
+            # sync_date has no sub-second precision: the id orders the logs
+            # written in the same second (an error, then its retry)
+            logs = move.sync_log_ids.sorted(lambda log: (log.sync_date, log.id))
+            move.sync_state = logs[-1].sync_state if logs else False
 
     @api.depends('company_id', 'company_id.is_official_company')
     @api.depends_context('uid')
