@@ -41,6 +41,20 @@ class DualBookkeepingCommon(AccountTestInvoicingCommon):
             }
         )
         cls.company.official_company_id = cls.official
+        # nv_double_currencies (F13): the second currency's gain / loss
+        # accounts, per company, used by its second-currency exchange entry
+        # (F12) at reconciliation; a configured company has them.
+        for data in (cls.company_data, cls.official_data):
+            cls.lbp.with_company(data["company"]).write(
+                {
+                    "gain_exchange_difference_account_id": data[
+                        "company"
+                    ].income_currency_exchange_account_id.id,
+                    "loss_exchange_difference_account_id": data[
+                        "company"
+                    ].expense_currency_exchange_account_id.id,
+                }
+            )
 
         cls.sale_journal = cls.company_data["default_journal_sale"]
         cls.purchase_journal = cls.company_data["default_journal_purchase"]

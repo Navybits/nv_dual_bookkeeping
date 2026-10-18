@@ -44,7 +44,11 @@ class TestFlag(DualBookkeepingCommon):
         wizard = self._register(official + non_official)
         self.assertTrue(wizard.is_official)
         self.assertFalse(wizard.is_official_set)
-        # one payment per partner: each keeps its documents' stream
+        # one payment per partner: each keeps its documents' stream.
+        # nv_double_currencies 19.0 creates these batch payments without the
+        # wizard's rate (no LBP amounts) and settles the whole LBP amount with
+        # a second-currency exchange entry (F12, F13 accounts of common.py);
+        # only the streams are checked here.
         payments = wizard._create_payments()
         self.assertEqual(len(payments), 2)
         by_partner = {p.partner_id: p for p in payments}
