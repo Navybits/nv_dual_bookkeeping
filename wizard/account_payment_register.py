@@ -77,13 +77,23 @@ class AccountPaymentRegister(models.TransientModel):
             # default to True (safer) and leave is_official_set=False so
             # the require_official_flag check will ask the user to confirm.
             if len(official_vals) == 1:
+                # copied from the documents: counts as set (D7)
                 defaults['is_official'] = next(iter(official_vals))
-                defaults['is_official_set'] = True  # inherited = explicit
+                defaults['is_official_set'] = True
             else:
+                # mixed streams: Official by default, the user should confirm
                 defaults['is_official'] = True
                 defaults['is_official_set'] = False
 
         return defaults
+
+    def onchange(self, values, field_names, fields_spec):
+        """EXTENDS web: a user click on the toggle marks the flag as set (D7);
+        see account.move.onchange."""
+        result = super().onchange(values, field_names, fields_spec)
+        if field_names and 'is_official' in field_names and 'is_official_set' in fields_spec:
+            result.setdefault('value', {})['is_official_set'] = True
+        return result
 
     # -------------------------------------------------------------------------
     # Push flag into payment vals
@@ -91,38 +101,44 @@ class AccountPaymentRegister(models.TransientModel):
 
     def _create_payment_vals_from_wizard(self, batch_result):
         """
-        Inject is_official and is_official_set into every payment created by
-        this wizard invocation.  account.payment.action_post() then forwards
-        both flags to the underlying account.move before posting, which routes
-        the move to the correct sequence stream (O or NO).
+        Inject is_official and is_official_set into the payment created from
+        the wizard's values.  account.payment then forwards both flags to the
+        underlying account.move, which routes the move to the correct
+        sequence stream (O or NO).
         """
         vals = super()._create_payment_vals_from_wizard(batch_result)
         vals['is_official'] = self.is_official
-        # Always mark as explicitly set: the user either inherited the value
-        # from the invoice (consciously accepted it) or changed it manually.
-        vals['is_official_set'] = True
+        vals['is_official_set'] = self.is_official_set
         return vals
 
-    # def action_create_payments(self):
+    def _create_payment_vals_from_batch(self, batch_result):
+        """EXTENDS account: one payment per batch. When the paid documents mix
+        both streams, each batch keeps the stream of its own documents (when
+        they share one); otherwise the wizard's stream applies."""
+        vals = super()._create_payment_vals_from_batch(batch_result)
+        vals['is_official'] = self.is_official
+        vals['is_official_set'] = self.is_official_set
+        mixed = len(set(self.line_ids.move_id.mapped('is_official'))) > 1
+        streams = set(batch_result['lines'].move_id.mapped('is_official'))
+        if mixed and len(streams) == 1 and not self.company_id.is_official_company:
+            vals['is_official'] = streams.pop()
+            vals['is_official_set'] = True
+        return vals
 
     def _init_payments(self, to_process, edit_mode=False):
         """
-        Safety net: after payments are created (regardless of which
-        _create_payment_vals_from_wizard ran), ensure is_official and
-        is_official_set are written to each payment.
-
-        This is necessary because nv_double_currencies overrides
+        Safety net: nv_double_currencies overrides
         _create_payment_vals_from_wizard and, when
-        enable_second_currency_for_company=True, does NOT call super() —
-        our injection above is therefore bypassed.  Writing the flag here
-        guarantees it lands on every payment before _post_payments() is called.
+        enable_second_currency_for_company=True, does NOT call super(), so
+        the flags of _create_payment_vals_from_wizard above are missing from
+        the creation values. They are added here, before the payments are
+        created, unless a batch already set them: the payment and its
+        journal entry are created in the right stream, with the wizard's
+        "explicitly set" mark (D7; it used to be forced to True).
         """
-        payments = super()._init_payments(to_process, edit_mode=edit_mode)
         if not self.env.company.is_official_company:
-            for payment in payments:
-                if payment.is_official != self.is_official or not payment.is_official_set:
-                    payment.sudo().write({
-                        'is_official': self.is_official,
-                        'is_official_set': True,
-                    })
-        return payments
+            for values in to_process:
+                create_vals = values['create_vals']
+                create_vals.setdefault('is_official', self.is_official)
+                create_vals.setdefault('is_official_set', self.is_official_set)
+        return super()._init_payments(to_process, edit_mode=edit_mode)
