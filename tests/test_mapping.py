@@ -5,6 +5,8 @@ from odoo.tests import tagged
 
 from .common import DualBookkeepingCommon
 
+ENGINE_LOGGER = "odoo.addons.nv_dual_bookkeeping.services.sync_engine"
+
 
 @tagged("post_install", "-at_install")
 class TestMapping(DualBookkeepingCommon):
@@ -65,7 +67,8 @@ class TestMapping(DualBookkeepingCommon):
         """D6: the sync fails with the tax's name, the invoice stays posted
         with an error log; created in the official company, a retry syncs
         it."""
-        invoice = self._taxed_invoice(self._tax("NV VAT 7.5%", self.company))
+        with self.assertLogs(ENGINE_LOGGER, "ERROR"):
+            invoice = self._taxed_invoice(self._tax("NV VAT 7.5%", self.company))
         self.assertEqual(invoice.state, "posted")
         self.assertFalse(self._mirror(invoice))
         self.assertEqual(invoice.sync_state, "error")
@@ -84,6 +87,7 @@ class TestMapping(DualBookkeepingCommon):
     def test_ambiguous_tax_fails(self):
         self._tax("Official A 7.5%", self.official)
         self._tax("Official B 7.5%", self.official)
-        invoice = self._taxed_invoice(self._tax("NV VAT 7.5%", self.company))
+        with self.assertLogs(ENGINE_LOGGER, "ERROR"):
+            invoice = self._taxed_invoice(self._tax("NV VAT 7.5%", self.company))
         self.assertFalse(self._mirror(invoice))
         self.assertIn("several matches", self._last_error(invoice).error_message)
