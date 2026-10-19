@@ -26,10 +26,12 @@ class AccountMove(models.Model):
 
     is_official_set = fields.Boolean(
         string='Official Flag Explicitly Set',
-        default=True,
+        default=lambda self: bool(self.env.context.get('default_partner_id')),
         copy=False,
-        help="Tracks whether the user explicitly chose Official or Non-Official "
-             "before posting. Used when require_official_flag setting is enabled.",
+        help="Set when the flag was chosen: the user clicked the toggle, it came "
+             "from the contact, or the document was created in code or copied "
+             "(credit note, duplicate, payment, mirror). Checked at posting when "
+             "'Require explicit Official/Non-Official selection' is on.",
     )
 
     dual_sequence_label = fields.Char(
@@ -53,6 +55,24 @@ class AccountMove(models.Model):
         copy=False,
         help="Stores the sequence number of the original transaction in the main company "
              "(e.g. 'BLOM-O/2026/0001'). Set on mirror entries by the sync engine.",
+    )
+
+    nv_mirror_move_id = fields.Many2one(
+        comodel_name='account.move',
+        string='Mirror in Official Books',
+        readonly=True,
+        copy=False,
+        index='btree_not_null',
+        help="Set on a source transaction by the sync engine: its mirror in the "
+             "Official Books company (D2).",
+    )
+
+    nv_mirror_outdated = fields.Boolean(
+        string='Mirror Outdated',
+        readonly=True,
+        copy=False,
+        help="Set when the source was reset to draft after it was mirrored: its "
+             "mirror is rewritten when the source is synced again (D2).",
     )
 
     sync_log_ids = fields.One2many(
@@ -129,8 +149,10 @@ class AccountMove(models.Model):
     @api.depends('sync_log_ids', 'sync_log_ids.sync_state', 'sync_log_ids.sync_date')
     def _compute_sync_state(self):
         for move in self:
-            logs = move.sync_log_ids.sorted('sync_date', reverse=True)
-            move.sync_state = logs[0].sync_state if logs else False
+            # sync_date has no sub-second precision: the id orders the logs
+            # written in the same second (an error, then its retry)
+            logs = move.sync_log_ids.sorted(lambda log: (log.sync_date, log.id))
+            move.sync_state = logs[-1].sync_state if logs else False
 
     @api.depends('company_id', 'company_id.is_official_company')
     @api.depends_context('uid')
@@ -158,13 +180,27 @@ class AccountMove(models.Model):
     @api.onchange('partner_id')
     def _onchange_partner_id_dual_bookkeeping(self):
         """Sync is_official from the partner whenever partner changes on a draft
-        document in a non-official-books company."""
+        document in a non-official-books company; a flag from an O/NO partner
+        counts as set (D7)."""
         if (
             self.partner_id
             and self.state == 'draft'
             and not self.company_id.is_official_company
         ):
             self.is_official = self.partner_id.is_official
+            self.is_official_set = True
+
+    def onchange(self, values, field_names, fields_spec):
+        """EXTENDS account: a user click on the toggle marks the flag as set (D7).
+
+        An @api.onchange on is_official cannot tell a click from a default:
+        Odoo runs every onchange method on the first call of a new form
+        (web/models/models.py, onchange). The first call has no field_names.
+        """
+        result = super().onchange(values, field_names, fields_spec)
+        if field_names and 'is_official' in field_names and 'is_official_set' in fields_spec:
+            result.setdefault('value', {})['is_official_set'] = True
+        return result
 
     # -------------------------------------------------------------------------
     # Sequence overrides (Odoo 19 native sequence.mixin)
@@ -464,6 +500,11 @@ class AccountMove(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        """D7: only the web form sends is_official_set (a field of the form,
+        False until the user clicks the toggle or picks a partner); entries
+        created in code by Odoo or other modules, and copies, count as set, so
+        they are never blocked by "Require explicit Official/Non-Official
+        selection"."""
         for vals in vals_list:
             # Only auto-set when not already supplied and not in Official Books company.
             # This covers programmatic creation (SO/PO invoice, batch billing, etc.)
@@ -473,6 +514,7 @@ class AccountMove(models.Model):
                 if partner_id:
                     partner = self.env['res.partner'].browse(partner_id)
                     vals['is_official'] = partner.is_official
+            vals.setdefault('is_official_set', True)
         return super().create(vals_list)
 
     # -------------------------------------------------------------------------
@@ -544,8 +586,8 @@ class AccountMove(models.Model):
             ).strip().lower() in ('true', '1')
             if require_flag and not move.is_official_set and not move.company_id.is_official_company:
                 raise UserError(_(
-                    "Please explicitly set Official or Non-Official on '%s' before posting. "
-                    "You can do this using the O/NO toggle on the transaction form."
+                    "Please explicitly set Official or Non-Official on '%s' before posting, "
+                    "with the O/NO toggle of the form."
                 ) % (move.name or move.ref or _('this transaction')))
 
             # Validation 2: block direct posting in official company
@@ -577,6 +619,51 @@ class AccountMove(models.Model):
                             move.name, str(e),
                         )
 
+        return result
+
+    # -------------------------------------------------------------------------
+    # Life-cycle of the mirror (D2)
+    # -------------------------------------------------------------------------
+
+    def _nv_mirrored(self):
+        """The sources in self that have a mirror (sudo: the link points to
+        the official company)."""
+        return self.filtered(lambda move: move.sudo().nv_mirror_move_id)
+
+    def button_draft(self):
+        """EXTENDS account: reset to draft resets the mirror (D2), refused
+        first when the mirror's period is locked in the Official Books.
+        Also reached by account.payment.action_draft."""
+        sources = self._nv_mirrored()
+        engine = self.env['nv.sync.engine']
+        engine.check_mirror_locks(sources, _("reset to draft"))
+        result = super().button_draft()
+        engine.reset_mirrors(sources)
+        return result
+
+    def button_cancel(self):
+        """EXTENDS account: cancelling cancels the mirror (D2); Odoo resets a
+        posted entry to draft first (button_draft above). Also reached by
+        account.payment.action_cancel."""
+        sources = self._nv_mirrored()
+        engine = self.env['nv.sync.engine']
+        engine.check_mirror_locks(sources, _("cancelled"))
+        result = super().button_cancel()
+        engine.cancel_mirrors(sources)
+        return result
+
+    def unlink(self):
+        """EXTENDS account: deleting a draft source deletes its draft mirror
+        (D2); refused while the mirror is posted."""
+        sources = self._nv_mirrored().filtered(lambda move: move.state != 'posted')
+        engine = self.env['nv.sync.engine']
+        engine.check_mirrors_deletable(sources)
+        deleted = [
+            (source.name, source.company_id, source.sudo().nv_mirror_move_id)
+            for source in sources
+        ]
+        result = super().unlink()
+        engine.delete_mirrors(deleted)
         return result
 
     # -------------------------------------------------------------------------
