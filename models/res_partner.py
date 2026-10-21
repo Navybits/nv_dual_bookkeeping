@@ -34,3 +34,4 @@ class ResPartner(models.Model):
         is_official = self.env.company.is_official_company
         for partner in self:
             partner.env_company_is_official = is_official
+            
