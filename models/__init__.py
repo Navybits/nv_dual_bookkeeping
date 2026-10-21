@@ -6,4 +6,3 @@ from . import account_move
 from . import account_payment
 from . import account_partial_reconcile
 from . import res_config_settings
-from . import nv_account_account

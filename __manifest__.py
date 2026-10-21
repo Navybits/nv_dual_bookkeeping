@@ -28,7 +28,6 @@
         'views/res_company_views.xml',
         'views/nv_sync_log_views.xml',
         'views/res_config_settings_views.xml',
-        'views/nv_account_account.xml',
 
         # Report overrides (invoice layout + external layout patches)
         'views/report_invoice.xml',
