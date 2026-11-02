@@ -559,11 +559,19 @@ class AccountMove(models.Model):
                     "they will sync to '%s' automatically."
                 ) % move.company_id.name)
 
-        # Core posting
-        result = super().action_post()
+        # Core posting - the sync to the official company runs in _post()
+        # (below), so it also happens for bulk posting and automatic posting.
+        return super().action_post()
 
-        # Post-posting: trigger sync engine for each eligible move
-        for move in self:
+    def _post(self, soft=True):
+        """
+        Trigger the sync engine after ANY posting, not only the Confirm button:
+        bulk "Confirm Entries" from the list view and auto-post call _post()
+        directly and never reach action_post() - such Official moves were left
+        unsynced. action_post() itself also goes through here.
+        """
+        posted = super()._post(soft)
+        for move in posted:
             if move.is_official and not move.is_mirror and move.state == 'posted':
                 if move.company_id.official_company_id:
                     try:
@@ -576,8 +584,7 @@ class AccountMove(models.Model):
                             "nv_dual_bookkeeping: Sync failed for move %s: %s",
                             move.name, str(e),
                         )
-
-        return result
+        return posted
 
     # -------------------------------------------------------------------------
     # Manual sync action
