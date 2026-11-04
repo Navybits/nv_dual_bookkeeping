@@ -4,28 +4,31 @@
         Default configuration parameters for NV Dual Bookkeeping.
         noupdate="1" — these are only written on first install.
         Administrators can change them via Settings > Accounting > Dual Bookkeeping.
+        forcecreate="0": unticking a setting DELETES its parameter, and without
+        this a module upgrade re-creates it with the value below (2026-11-04:
+        Default Official came back True after an upgrade).
     -->
 
     <!-- Default all new transactions to Official -->
-    <record id="param_default_is_official" model="ir.config_parameter">
+    <record id="param_default_is_official" model="ir.config_parameter" forcecreate="0">
         <field name="key">nv_dual_bookkeeping.default_is_official</field>
         <field name="value">True</field>
     </record>
 
     <!-- Do NOT require the user to explicitly set O/NO before posting (permissive default) -->
-    <record id="param_require_official_flag" model="ir.config_parameter">
+    <record id="param_require_official_flag" model="ir.config_parameter" forcecreate="0">
         <field name="key">nv_dual_bookkeeping.require_official_flag</field>
         <field name="value">False</field>
     </record>
 
     <!-- Do NOT auto-post mirror entries — leave them in draft for review -->
-    <record id="param_auto_post_mirror" model="ir.config_parameter">
+    <record id="param_auto_post_mirror" model="ir.config_parameter" forcecreate="0">
         <field name="key">nv_dual_bookkeeping.auto_post_mirror</field>
         <field name="value">False</field>
     </record>
 
     <!-- Do NOT block direct posting in the official company (non-restrictive default) -->
-    <record id="param_block_direct_posting_in_official" model="ir.config_parameter">
+    <record id="param_block_direct_posting_in_official" model="ir.config_parameter" forcecreate="0">
         <field name="key">nv_dual_bookkeeping.block_direct_posting_in_official</field>
         <field name="value">False</field>
     </record>
