@@ -9,7 +9,7 @@ class NvSyncLog(models.Model):
     _name = 'nv.sync.log'
     _description = 'Dual Bookkeeping Sync Log'
     _order = 'sync_date desc, id desc'
-    _rec_name = 'source_move_id'
+    _rec_name = 'source_ref'
 
     source_move_id = fields.Many2one(
         comodel_name='account.move',
@@ -17,6 +17,26 @@ class NvSyncLog(models.Model):
         readonly=True,
         ondelete='set null',
         help="The original transaction in the main operating company.",
+    )
+    source_ref = fields.Char(
+        string='Source Number',
+        readonly=True,
+        help="Number of the source transaction when the log was written; kept "
+             "when the source is deleted.",
+    )
+    operation = fields.Selection(
+        selection=[
+            ('create', 'Mirror'),
+            ('update', 'Update'),
+            ('reset', 'Reset to Draft'),
+            ('cancel', 'Cancel'),
+            ('delete', 'Delete'),
+            ('reconcile', 'Reconcile'),
+            ('unreconcile', 'Unreconcile'),
+        ],
+        readonly=True,
+        default='create',
+        help="Step of the mirror's life-cycle this log records (D2).",
     )
     target_move_id = fields.Many2one(
         comodel_name='account.move',
@@ -78,8 +98,8 @@ class NvSyncLog(models.Model):
             _logger.warning("nv.sync.log %d: retry called but source_move_id is unset.", self.id)
             return
 
-        # Reset this log to pending so the engine creates a fresh log entry
-        self.sudo().write({'sync_state': 'pending'})
+        # The engine writes a new log with the result; this one keeps its error
+        # (it used to be set to "pending" and stay so for ever).
         self.env['nv.sync.engine'].sync_move(self.source_move_id, triggered_by='manual')
 
     @api.model
