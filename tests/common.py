@@ -243,13 +243,24 @@ class DualBookkeepingCommon(AccountTestInvoicingCommon):
         **extra,
     ):
         user = user or self.accountant
-        payment = self._env_for(user)["account.payment"].create(
+        partner = partner or self.partner_a
+        Payment = self._env_for(user)["account.payment"]
+        if "partner_amount" in Payment._fields:
+            # nv_double_currencies fills these by onchange in the web client;
+            # without them the whole amount goes to an exchange difference line
+            # without an account.
+            extra.setdefault("partner_amount", amount)
+            extra.setdefault(
+                "receivable_payable_account_id",
+                partner.property_account_receivable_id.id,
+            )
+        payment = Payment.create(
             {
                 "amount": amount,
                 "date": date,
                 "payment_type": "inbound",
                 "partner_type": "customer",
-                "partner_id": (partner or self.partner_a).id,
+                "partner_id": partner.id,
                 "journal_id": (journal or self.bank_journal).id,
                 "rate_main_second": RATE,
                 **extra,

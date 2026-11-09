@@ -168,7 +168,10 @@ class TestLifecycle(DualBookkeepingCommon):
 
         payment.action_draft()
         self.assertEqual(mirror_payment.state, "draft")
-        payment.write({"amount": 150.0, "rate_main_second": 90000.0})
+        vals = {"amount": 150.0, "rate_main_second": 90000.0}
+        if "partner_amount" in payment._fields:
+            vals["partner_amount"] = 150.0  # onchange of nv_double_currencies
+        payment.write(vals)
         payment.action_post()
         self.assertIn(mirror_payment.state, ("in_process", "paid"))
         self.assertEqual(mirror_payment.move_id.state, "posted")

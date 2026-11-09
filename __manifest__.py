@@ -19,6 +19,7 @@
         # Wizard views
         'wizard/views/nv_journal_link_wizard_views.xml',
         'wizard/views/account_payment_register_views.xml',
+        'wizard/views/nv_official_change_wizard_views.xml',
 
         # Model views
         'views/res_partner_views.xml',

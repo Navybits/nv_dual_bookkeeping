@@ -3,3 +3,4 @@ access_nv_sync_log_user,nv.sync.log user read,model_nv_sync_log,account.group_ac
 access_nv_sync_log_manager,nv.sync.log manager full,model_nv_sync_log,account.group_account_manager,1,1,1,1
 access_nv_journal_link_wizard_manager,nv.journal.link.wizard manager,model_nv_journal_link_wizard,account.group_account_manager,1,1,1,1
 access_nv_journal_link_wizard_line_manager,nv.journal.link.wizard.line manager,model_nv_journal_link_wizard_line,account.group_account_manager,1,1,1,1
+access_nv_official_change_wizard_manager,nv.official.change.wizard manager,model_nv_official_change_wizard,account.group_account_manager,1,1,1,1

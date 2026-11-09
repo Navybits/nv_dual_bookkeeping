@@ -58,6 +58,12 @@
                         class="btn btn-secondary"
                         invisible="not is_official or is_mirror or state not in ('in_process', 'paid') or sync_state == 'synced' or not company_official_company_id"
                         groups="nv_dual_bookkeeping.group_sync_manager"/>
+                <button name="action_change_to_non_official"
+                        type="object"
+                        string="Change to Non-Official"
+                        class="btn btn-secondary"
+                        invisible="not is_official or is_mirror or state not in ('in_process', 'paid') or company_is_official_company"
+                        groups="account.group_account_manager"/>
             </xpath>
 
             <!-- 3. O/NO toggle — inserted after the journal_id field -->

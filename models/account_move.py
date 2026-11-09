@@ -537,6 +537,24 @@ class AccountMove(models.Model):
                         "after it has been posted."
                     ) % move.name)
 
+                # Rule 1b: a draft that was posted before keeps its number on
+                # repost, so switching stream would leave e.g. an Official number
+                # on a Non-Official entry. Clearing the name in the same write
+                # (as the Change to Non-Official wizard does) is allowed.
+                if (
+                    bool(vals['is_official']) != move.is_official
+                    and move.posted_before
+                    and move.name and move.name != '/'
+                    and vals.get('name', move.name) not in (False, '/')
+                ):
+                    raise UserError(_(
+                        "'%(name)s' already holds a number from the %(stream)s sequence, "
+                        "so its Official/Non-Official status cannot be switched. Use the "
+                        "'Change to Non-Official' button on the posted entry instead.",
+                        name=move.name,
+                        stream=_('Official') if move.is_official else _('Non-Official'),
+                    ))
+
                 # Rule 2: Official Books company — all transactions must stay Official
                 if vals['is_official'] is False and move.company_id.is_official_company:
                     raise UserError(_(
@@ -674,6 +692,19 @@ class AccountMove(models.Model):
     # -------------------------------------------------------------------------
     # Manual sync action
     # -------------------------------------------------------------------------
+
+    def action_change_to_non_official(self):
+        """Open the Change to Non-Official wizard on a posted Official entry."""
+        self.ensure_one()
+        self.env['nv.official.change.wizard']._check_move(self)
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Change to Non-Official'),
+            'res_model': 'nv.official.change.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_move_id': self.id},
+        }
 
     def action_manual_sync(self):
         """

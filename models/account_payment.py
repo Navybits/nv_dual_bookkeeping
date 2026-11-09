@@ -151,6 +151,19 @@ class AccountPayment(models.Model):
                         "Cannot change the Official/Non-Official status of payment '%s' "
                         "after it has been posted."
                     ) % payment.name)
+                # Same as account.move Rule 1b: the reset entry keeps its number
+                # on repost, so its stream cannot be switched.
+                move = payment.move_id
+                if (
+                    bool(vals['is_official']) != payment.is_official
+                    and move.posted_before
+                    and move.name and move.name != '/'
+                ):
+                    raise UserError(_(
+                        "Payment '%s' already holds a number from its sequence, so its "
+                        "Official/Non-Official status cannot be switched. Use the "
+                        "'Change to Non-Official' button on the posted payment instead."
+                    ) % move.name)
 
             # Mark as explicitly set so require_official_flag validation passes
             vals['is_official_set'] = True
@@ -269,3 +282,9 @@ class AccountPayment(models.Model):
         if not self.move_id:
             raise UserError(_("No journal entry is linked to this payment."))
         return self.move_id.action_manual_sync()
+
+    def action_change_to_non_official(self):
+        self.ensure_one()
+        if not self.move_id:
+            raise UserError(_("No journal entry is linked to this payment."))
+        return self.move_id.action_change_to_non_official()

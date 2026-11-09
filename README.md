@@ -124,9 +124,22 @@ date is locked in the Official Books company.
 - An error log is written to `nv.sync.log`.
 - A sticky bus notification warns the user to check the Sync Dashboard.
 
+### Changing a posted Official entry to Non-Official
+
+**Change to Non-Official** button on posted Official invoices, entries and
+payments (accounting managers only). The entry must not be reconciled. The
+wizard asks for a reason, which is posted in the chatter.
+
+| Method | When | What it does |
+|--------|------|--------------|
+| Renumber | the entry holds the last Official number of its sequence (its journal and the official journal) | resets the entry (and its mirror), deletes the mirror, clears the entry's number and posts it with the next Non-Official number; the next Official entry reuses the freed number. The user must confirm the document was not sent or declared. |
+| Reverse | always | invoices / entries: posts an Official reversal (mirrored) and creates a Non-Official draft copy. Payments: cancels the payment and its mirror and creates a Non-Official draft copy. |
+
 ### Locking
 
 - `is_official` **cannot be changed** after a transaction is posted (enforced in `write()`).
+- It cannot be switched either on a draft that was posted before and still
+  holds its number: use **Change to Non-Official** instead.
 - Setting `is_official=False` requires the **Can Mark Transactions as Non-Official** group.
 
 ---
@@ -261,3 +274,7 @@ nv_dual_bookkeeping/
   until the user clicks the toggle or picks a contact; documents created in code,
   copies and payments of the Pay wizard (each batch in its documents' stream) count
   as set. Documents already in the database are not affected.
+- **The sync runs from `_post()`**: bulk "Confirm Entries", auto-post and reversals
+  posted with cancel=True are mirrored too.
+- **Change to Non-Official** wizard (renumber when last Official number, else
+  reverse); the O/NO flag cannot be switched on a reset entry that holds a number.

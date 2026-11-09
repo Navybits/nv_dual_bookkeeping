@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         Change to Non-Official Wizard — Form View
+         ================================================================ -->
+    <record id="view_nv_official_change_wizard_form" model="ir.ui.view">
+        <field name="name">nv.official.change.wizard.form</field>
+        <field name="model">nv.official.change.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Change to Non-Official">
+                <field name="payment_id" invisible="1"/>
+                <field name="renumber_block_reason" invisible="1"/>
+
+                <div class="alert alert-warning" role="alert" invisible="not renumber_block_reason">
+                    <strong>Renumbering is not possible: </strong>
+                    <field name="renumber_block_reason" readonly="1" nolabel="1" class="d-inline"/>
+                </div>
+
+                <group>
+                    <field name="move_id" options="{'no_open': True}"/>
+                    <field name="method" widget="radio"
+                           readonly="renumber_block_reason"/>
+                </group>
+
+                <div class="text-muted mb-3" invisible="method != 'renumber'">
+                    The mirror in the official company is deleted and this entry is posted again
+                    with the next Non-Official number. Its Official number is freed and goes to the
+                    next Official entry, so the Official sequence has no gap.
+                </div>
+                <div class="text-muted mb-3" invisible="method != 'reverse' or payment_id">
+                    An Official reversal (credit note) is posted and mirrored, and a Non-Official
+                    draft copy is created for you to review and post.
+                </div>
+                <div class="text-muted mb-3" invisible="method != 'reverse' or not payment_id">
+                    The payment and its mirror are cancelled (both keep their number), and a
+                    Non-Official draft copy is created for you to review and post.
+                </div>
+
+                <group>
+                    <field name="not_sent_confirmed" invisible="method != 'renumber'"/>
+                    <field name="reason" placeholder="Why was this entry posted as Official?"/>
+                </group>
+
+                <footer>
+                    <button name="action_confirm"
+                            type="object"
+                            string="Confirm"
+                            class="btn btn-primary"
+                            data-hotkey="q"/>
+                    <button string="Cancel" special="cancel" class="btn btn-secondary" data-hotkey="x"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>
