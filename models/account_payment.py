@@ -179,7 +179,30 @@ class AccountPayment(models.Model):
                         "Please contact your accounting manager."
                     ))
 
+        if 'journal_id' in vals:
+            self._check_journal_change(vals['journal_id'])
+
         return super().write(vals)
+
+    def _check_journal_change(self, journal_id):
+        """A payment posted once keeps its journal: moving it would free its
+        number in the old journal, a gap in the (Official) numbering. Cancel
+        it and create a new payment instead. Mirrors are exempt: the sync
+        engine moves them when their source's journal link changes."""
+        for payment in self:
+            move = payment.move_id
+            if (
+                payment.journal_id.id != journal_id
+                and not payment.is_mirror
+                and move.posted_before
+                and move.name and move.name != '/'
+            ):
+                raise UserError(_(
+                    "Payment %(name)s already holds a number from journal %(journal)s, "
+                    "so its journal cannot be changed. Cancel it and create a new "
+                    "payment in the right journal.",
+                    name=move.name, journal=payment.journal_id.display_name,
+                ))
 
     # -------------------------------------------------------------------------
     # action_post override — push flag to the underlying journal entry

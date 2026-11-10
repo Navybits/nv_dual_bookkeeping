@@ -270,3 +270,113 @@ class TestLifecycle(DualBookkeepingCommon):
             .search_count([("is_mirror", "=", True), ("source_move_ref", "=", by_name.name)]),
             1,
         )
+
+    # ------------------------------------------------------------------
+    # Payment edits that reach the mirror: receivable account, journal,
+    # lines edited on the payment's entry
+    # ------------------------------------------------------------------
+
+    def _receivable_pair(self, code="121099"):
+        """A second receivable account with the same code in both books."""
+        accounts = self.env["account.account"]
+        for company in (self.company, self.official):
+            accounts |= accounts.sudo().create(
+                {
+                    "name": "Other Receivable",
+                    "code": code,
+                    "account_type": "asset_receivable",
+                    "reconcile": True,
+                    "company_ids": company.ids,
+                }
+            )
+        return accounts[0]
+
+    def _counterpart_code(self, payment_entry):
+        line = payment_entry.line_ids.filtered(
+            lambda l: l.account_id.account_type == "asset_receivable"
+        )
+        self.assertEqual(len(line), 1)
+        return line.account_id.with_company(payment_entry.company_id).code
+
+    def test_payment_receivable_account_change(self):
+        payment = self._payment().with_env(self.env)
+        mirror_payment = self._mirror(payment.move_id).origin_payment_id
+        other = self._receivable_pair()
+
+        payment.action_draft()
+        vals = {"destination_account_id": other.id}
+        if "receivable_payable_account_id" in payment._fields:
+            vals["receivable_payable_account_id"] = other.id
+        payment.write(vals)
+        payment.action_post()
+
+        self.assertEqual(self._counterpart_code(payment.move_id), "121099")
+        self.assertEqual(self._counterpart_code(mirror_payment.move_id), "121099")
+        self.assertEqual(mirror_payment.move_id.state, "posted")
+
+    def _bank2(self):
+        """A second bank journal in both books, linked."""
+        bank2 = self.env["account.journal"].create(
+            {"name": "Bank 2", "code": "BNK2", "type": "bank", "company_id": self.company.id}
+        )
+        off_bank2 = self.env["account.journal"].sudo().create(
+            {"name": "Bank 2", "code": "BNK2", "type": "bank", "company_id": self.official.id}
+        )
+        bank2.official_journal_id = off_bank2
+        self._setup_outstanding_accounts(self.company, bank2, self.bank_journal)
+        self._setup_outstanding_accounts(self.official, off_bank2, self.bank_journal)
+        return bank2, off_bank2
+
+    def test_payment_journal_change_refused_after_posting(self):
+        """A payment posted once keeps its journal: moving it would free its
+        number (a gap in the Official numbering)."""
+        bank2, _off_bank2 = self._bank2()
+        payment = self._payment().with_env(self.env)
+        mirror_payment = self._mirror(payment.move_id).origin_payment_id
+        name = payment.move_id.name
+
+        payment.action_draft()
+        with self.assertRaises(UserError) as error:
+            payment.journal_id = bank2
+        self.assertIn("journal cannot be changed", str(error.exception))
+        self.assertEqual(payment.journal_id, self.bank_journal)
+
+        payment.action_post()
+        self.assertEqual(payment.move_id.name, name)
+        self.assertEqual(mirror_payment.journal_id, self.off_bank_journal)
+        self.assertEqual(mirror_payment.move_id.name, name)
+
+    def test_draft_payment_journal_change_before_first_post(self):
+        """A payment never posted has no number (in Odoo 19 not even an entry:
+        it is created at posting): its journal can change, and its mirror is
+        created in the linked official journal."""
+        bank2, off_bank2 = self._bank2()
+        payment = self._payment(post=False).with_env(self.env)
+        payment.journal_id = bank2
+        payment.action_post()
+
+        self.assertEqual(payment.move_id.journal_id, bank2)
+        mirror_payment = self._mirror(payment.move_id).origin_payment_id
+        self.assertEqual(mirror_payment.journal_id, off_bank2)
+        self.assertEqual(mirror_payment.move_id.journal_id, off_bank2)
+        self.assertEqual(mirror_payment.move_id.name, payment.move_id.name)
+        self.assertEqual(mirror_payment.move_id.state, "posted")
+
+    def test_payment_entry_edited_directly(self):
+        payment = self._payment().with_env(self.env)
+        mirror_payment = self._mirror(payment.move_id).origin_payment_id
+        other = self._receivable_pair("121098")
+        entry = payment.move_id
+
+        entry.button_draft()
+        counterpart = entry.line_ids.filtered(
+            lambda l: l.account_id.account_type == "asset_receivable"
+        )
+        entry.write({"line_ids": [Command.update(counterpart.id, {"account_id": other.id})]})
+        entry.action_post()
+
+        self.assertEqual(self._counterpart_code(entry), "121098")
+        self.assertEqual(self._counterpart_code(mirror_payment.move_id), "121098")
+        self.assertEqual(
+            self._second_amounts(mirror_payment.move_id), self._second_amounts(entry)
+        )

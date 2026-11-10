@@ -534,12 +534,24 @@ class NvSyncEngine(models.AbstractModel):
         # empty, _prepare_move_line_default_vals_direct() uses
         # receivable_payable_account_id (not destination_account_id) for the
         # counterpart line. Both must be set regardless of which path runs.
+        #
+        # The two can differ: the user picks receivable_payable_account_id on
+        # the payment form (its counterpart line); each is mapped on its own so
+        # a changed receivable / payable account reaches the mirror.
         if source_payment.destination_account_id:
             official_dest = self._get_mirror_account(
                 source_payment.destination_account_id, official_co
             )
             vals['destination_account_id'] = official_dest.id
             vals['receivable_payable_account_id'] = official_dest.id
+        source_rp_account = (
+            'receivable_payable_account_id' in source_payment._fields
+            and source_payment.receivable_payable_account_id
+        )
+        if source_rp_account:
+            vals['receivable_payable_account_id'] = self._get_mirror_account(
+                source_rp_account, official_co
+            ).id
 
         # difference_account_id (nv_double_currencies): exchange diff account.
         # Map it if set on the source; if not, the code falls back to the
@@ -560,6 +572,7 @@ class NvSyncEngine(models.AbstractModel):
         vals = self._mirror_payment_vals(source_move, official_co, official_journal)
         vals.update({'journal_id': official_journal.id, 'company_id': official_co.id})
         mirror_payment = self._mirror_env(official_co)['account.payment'].create(vals)
+        self._copy_payment_lines(source_move, mirror_payment, official_co)
         mirror_payment.action_post()
 
         _logger.info(
@@ -576,8 +589,60 @@ class NvSyncEngine(models.AbstractModel):
         if mirror_payment.state != 'draft':
             self._remove_mirror_reconciliations(mirror_payment.move_id)
             mirror_payment.action_draft()
-        mirror_payment.write(self._mirror_payment_vals(source_move, official_co, official_journal))
+        vals = self._mirror_payment_vals(source_move, official_co, official_journal)
+        mirror_entry = mirror_payment.move_id
+        if mirror_payment.journal_id != official_journal or (
+            mirror_entry.name not in (source_move.name, '/', False)
+        ):
+            # The source moved to another journal (its official journal follows)
+            # or got another number: the mirror's number is cleared first (Odoo
+            # refuses a journal change on an entry posted once that keeps its
+            # name) and posting gives it the source's number again.
+            if mirror_entry:
+                mirror_entry.write({'name': False})
+            vals['journal_id'] = official_journal.id
+        mirror_payment.write(vals)
+        self._copy_payment_lines(source_move, mirror_payment, official_co)
         return mirror_payment.move_id
+
+    def _copy_payment_lines(self, source_move, mirror_payment, official_co):
+        """The mirror payment's entry gets the lines of its source's entry
+        (accounts mapped by code), as a plain entry's mirror does: the source
+        entry may have been edited directly (an account changed on a line),
+        which the payment's own fields do not carry.
+
+        Not when the source payment has bank fees: they are deliberately left
+        out of the official books (see _mirror_payment_vals), so the mirror
+        keeps the lines Odoo generates from its fields."""
+        mirror_entry = mirror_payment.move_id
+        source_payment = source_move.origin_payment_id
+        if not mirror_entry or mirror_entry.state != 'draft':
+            return
+        if getattr(source_payment, 'bank_fees_amount', 0.0):
+            return
+        line_vals = [Command.delete(line.id) for line in mirror_entry.line_ids]
+        for line in source_move.line_ids:
+            mp = self._map_partner(line.partner_id, official_co) if line.partner_id else None
+            line_vals.append(Command.create({
+                'account_id': self._get_mirror_account(line.account_id, official_co).id,
+                'name': line.name or '',
+                'balance': line.balance,
+                'amount_currency': line.amount_currency,
+                'currency_id': line.currency_id.id,
+                'partner_id': mp.id if mp else False,
+                'date_maturity': line.date_maturity,
+                'display_type': line.display_type,
+                'second_currency_amount': line.second_currency_amount,
+                'rate_main_second_line': line.rate_main_second_line,
+                'receivable_payable_line': line.receivable_payable_line,
+            }))
+        # skip_account_move_synchronization: the payment's fields are already
+        # those of the source; Odoo must not rebuild them from these lines
+        mirror_entry.with_context(
+            skip_account_move_synchronization=True,
+            skip_invoice_sync=True,
+            check_move_validity=False,
+        ).write({'line_ids': line_vals})
 
     # =========================================================================
     # Life-cycle (D2)
