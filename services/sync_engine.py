@@ -61,6 +61,24 @@ class NvSyncEngine(models.AbstractModel):
         )
 
     @api.model
+    def sync_payment_memo(self, source_payments):
+        """The memo of a posted payment, edited without a reset to draft,
+        copied to its mirror payment (non-blocking, like the sync on post)."""
+        for payment in source_payments:
+            mirror_payment = payment.move_id.sudo().nv_mirror_move_id.origin_payment_id
+            if not mirror_payment or mirror_payment.memo == payment.memo:
+                continue
+            try:
+                with self.env.cr.savepoint():
+                    mirror_payment.with_company(mirror_payment.company_id).write(
+                        {'memo': payment.memo})
+            except Exception as e:
+                _logger.error(
+                    "nv_dual_bookkeeping: memo of %s not copied to its mirror: %s",
+                    payment.move_id.name, e,
+                )
+
+    @api.model
     def check_mirror_locks(self, source_moves, action):
         """D2: refuse a change of these sources before it happens when the
         period of their posted mirror is locked in the Official Books company
@@ -377,6 +395,7 @@ class NvSyncEngine(models.AbstractModel):
                     'partner_id': mp.id if mp else False,
                     'display_type': line.display_type,
                     'sequence': line.sequence,
+                    **self._mirror_line_extra_vals(line, official_co),
                 }))
             vals.update({
                 'invoice_date': source_move.invoice_date or source_move.date,
@@ -408,8 +427,23 @@ class NvSyncEngine(models.AbstractModel):
                     'second_currency_amount': line.second_currency_amount,
                     'rate_main_second_line': line.rate_main_second_line,
                     'receivable_payable_line': line.receivable_payable_line,
+                    **self._mirror_line_extra_vals(line, official_co),
                 }))
             vals['line_ids'] = line_vals
+        return vals
+
+    def _mirror_line_extra_vals(self, line, official_co):
+        """Line values every mirror line carries over: its analytic
+        distribution (mapped to the official company) and its deferral period
+        (account_accountant: the official company generates the deferral
+        entries of the mirror when it posts it, by its own deferral settings)."""
+        vals = {}
+        if line.analytic_distribution:
+            vals['analytic_distribution'] = self._map_analytic_distribution(
+                line.analytic_distribution, official_co)
+        for name in ('deferred_start_date', 'deferred_end_date'):
+            if name in line._fields and line[name]:
+                vals[name] = line[name]
         return vals
 
     def _create_mirror_entry(self, source_move, official_co, official_journal):
@@ -481,11 +515,15 @@ class NvSyncEngine(models.AbstractModel):
 
         # payment_method_line_id must be supplied explicitly — Odoo does not
         # auto-select it on create() when journal_id is set programmatically.
+        # The matching line, not the journal's first one: a "Manual Payment
+        # LBP" source must not become "Manual Payment USD" (another outstanding
+        # account) in the official books.
         official_journal_sudo = official_journal.sudo().with_company(official_co)
-        if source_payment.payment_type == 'inbound':
-            method_line = official_journal_sudo.inbound_payment_method_line_ids[:1]
-        else:
-            method_line = official_journal_sudo.outbound_payment_method_line_ids[:1]
+        method_line = self._map_payment_method_line(
+            source_payment.payment_method_line_id,
+            official_journal_sudo,
+            source_payment.payment_type,
+        )
 
         vals = {
             'payment_type': source_payment.payment_type,
@@ -517,9 +555,20 @@ class NvSyncEngine(models.AbstractModel):
             'invoice_rate': source_payment.invoice_rate,
             # bank_fees_amount intentionally NOT synced: bank charges are
             # incurred at the source company's bank — not in the official books.
+            'partner_bank_id': self._map_partner_bank(
+                source_payment.partner_bank_id, mirror_partner, official_co).id or False,
         }
         if method_line:
             vals['payment_method_line_id'] = method_line.id
+        # Optional fields of other modules, copied when the payment has them:
+        # nv_double_currencies (advance payment, manual VAT rate) and e.g.
+        # nv_pr_prunelle's analytic distribution (analytic.mixin).
+        for name in ('is_advance_payment', 'set_manual_vat_rate', 'manual_rate_vat'):
+            if name in source_payment._fields:
+                vals[name] = source_payment[name]
+        if 'analytic_distribution' in source_payment._fields:
+            vals['analytic_distribution'] = self._map_analytic_distribution(
+                source_payment.analytic_distribution, official_co)
 
         # destination_account_id: always resolve explicitly from the source so
         # that manual payments (no partner) get a valid account. Odoo can only
@@ -635,6 +684,7 @@ class NvSyncEngine(models.AbstractModel):
                 'second_currency_amount': line.second_currency_amount,
                 'rate_main_second_line': line.rate_main_second_line,
                 'receivable_payable_line': line.receivable_payable_line,
+                **self._mirror_line_extra_vals(line, official_co),
             }))
         # skip_account_move_synchronization: the payment's fields are already
         # those of the source; Odoo must not rebuild them from these lines
@@ -938,6 +988,79 @@ class NvSyncEngine(models.AbstractModel):
             })
 
         return mirror_account
+
+    def _map_analytic_distribution(self, distribution, target_company):
+        """Analytic distribution of a mirror line / payment.
+
+        Keys are analytic account ids, or several ids joined by ',' (one per
+        plan). An account shared between companies (no company) or of the
+        official company is kept; another company's account is matched in the
+        official company by code, then name, within the same plan. A missing
+        account fails the sync with its name, as a missing tax does (D6): an
+        analytic split is never dropped silently."""
+        if not distribution:
+            return False
+        Analytic = self.env['account.analytic.account'].sudo()
+        mapped = {}
+        for key, percentage in distribution.items():
+            ids = []
+            for account in Analytic.browse(int(i) for i in str(key).split(',')):
+                if not account.exists():
+                    continue
+                if account.company_id and account.company_id != target_company:
+                    domain = [
+                        ('plan_id', '=', account.plan_id.id),
+                        ('company_id', 'in', (target_company.id, False)),
+                    ]
+                    match = account.code and Analytic.search(
+                        domain + [('code', '=', account.code)], limit=1)
+                    match = match or Analytic.search(domain + [('name', '=', account.name)], limit=1)
+                    if not match:
+                        raise UserError(_(
+                            "Analytic account '%(account)s' was not found in the official "
+                            "company '%(company)s'. Create it there (same plan, code or "
+                            "name), or share it between the companies, then retry the sync.",
+                            account=account.display_name, company=target_company.name,
+                        ))
+                    account = match
+                ids.append(str(account.id))
+            if ids:
+                mapped[','.join(ids)] = percentage
+        return mapped or False
+
+    def _map_partner_bank(self, bank, mirror_partner, target_company):
+        """The partner bank account of a mirror payment: the same record when
+        it is shared with the official company, else the mirror partner's
+        account with the same number; none when it does not exist there."""
+        if not bank:
+            return self.env['res.partner.bank']
+        bank = bank.sudo()
+        if not bank.company_id or bank.company_id == target_company:
+            return bank
+        return self.env['res.partner.bank'].sudo().search([
+            ('partner_id', '=', mirror_partner.id),
+            ('sanitized_acc_number', '=', bank.sanitized_acc_number),
+            ('company_id', 'in', (target_company.id, False)),
+        ], limit=1)
+
+    def _map_payment_method_line(self, source_line, official_journal, payment_type):
+        """The official journal's payment method line matching the source's:
+        same payment method and name (e.g. "Manual Payment LBP"), else the
+        same payment method, else the journal's first one."""
+        lines = (
+            official_journal.inbound_payment_method_line_ids
+            if payment_type == 'inbound'
+            else official_journal.outbound_payment_method_line_ids
+        )
+        if source_line:
+            same_method = lines.filtered(
+                lambda line: line.payment_method_id == source_line.payment_method_id)
+            return (
+                same_method.filtered(lambda line: line.name == source_line.name)[:1]
+                or same_method[:1]
+                or lines[:1]
+            )
+        return lines[:1]
 
     # =========================================================================
     # Partner mapping

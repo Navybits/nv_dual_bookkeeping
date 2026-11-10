@@ -105,6 +105,15 @@ class AccountPayment(models.Model):
             self.is_official = self.partner_id.is_official
             self.is_official_set = True
 
+    @api.onchange('is_official')
+    def _onchange_is_official_dual_bookkeeping(self):
+        """Nothing to do here: declaring it makes the web client send a click
+        on the O/NO toggle to the server (it only does so for fields with an
+        onchange; on account.move a computed field depends on is_official,
+        on account.payment nothing did), so that onchange() below marks the
+        flag as set. Without it a payment without contact could never be
+        posted with "Require explicit Official/Non-Official selection"."""
+
     def onchange(self, values, field_names, fields_spec):
         """EXTENDS web: a user click on the toggle marks the flag as set (D7);
         see account.move.onchange."""
@@ -182,7 +191,13 @@ class AccountPayment(models.Model):
         if 'journal_id' in vals:
             self._check_journal_change(vals['journal_id'])
 
-        return super().write(vals)
+        result = super().write(vals)
+        if 'memo' in vals:
+            # The memo can be edited on a posted payment; nothing is reposted,
+            # so it is copied to the mirror payment here.
+            self.env['nv.sync.engine'].sync_payment_memo(
+                self.filtered(lambda p: p.state != 'draft' and not p.is_mirror))
+        return result
 
     def _check_journal_change(self, journal_id):
         """A payment posted once keeps its journal: moving it would free its
