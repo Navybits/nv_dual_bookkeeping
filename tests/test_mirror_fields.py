@@ -133,6 +133,82 @@ class TestMirrorFields(DualBookkeepingCommon):
         self.assertEqual(bill.sync_state, "error")
         self.assertIn("Only in main", self._logs(bill).sorted("id")[-1].error_message)
 
+    # ------------------------------------------------------------------
+    # Payment term, edits made on a posted document (2026-11-10, round 2)
+    # ------------------------------------------------------------------
+
+    def _payment_term(self, days):
+        return self.env["account.payment.term"].sudo().create({
+            "name": f"{days} days",
+            "line_ids": [Command.create({"value": "percent", "value_amount": 100.0,
+                                         "nb_days": days})],
+        })
+
+    def test_bill_payment_term_changed_on_repost(self):
+        bill = self._invoice(move_type="in_invoice",
+                             invoice_payment_term_id=self._payment_term(30).id, post=True)
+        mirror = self._mirror(bill)
+        self.assertEqual(mirror.invoice_payment_term_id, bill.invoice_payment_term_id)
+        bill.button_draft()
+        bill.invoice_payment_term_id = self._payment_term(60)
+        bill.action_post()
+        self.assertEqual(mirror.invoice_payment_term_id, bill.invoice_payment_term_id)
+        self.assertEqual(mirror.invoice_date_due, bill.invoice_date_due)
+
+    def test_bill_without_term_keeps_its_due_date(self):
+        """The official partner's default term does not replace the due date."""
+        self.partner_a.with_company(self.official).sudo().property_supplier_payment_term_id = \
+            self._payment_term(90)
+        bill = self._invoice(move_type="in_invoice", invoice_payment_term_id=False,
+                             invoice_date_due="2026-02-15", post=True)
+        mirror = self._mirror(bill)
+        self.assertFalse(mirror.invoice_payment_term_id)
+        self.assertEqual(str(mirror.invoice_date_due), "2026-02-15")
+
+    def test_bill_due_date_edited_after_posting(self):
+        bill = self._invoice(move_type="in_invoice", invoice_payment_term_id=False,
+                             invoice_date_due="2026-02-15", post=True)
+        with Form(bill.with_env(self.env)) as form:
+            form.invoice_date_due = "2026-03-20"
+        mirror = self._mirror(bill)
+        self.assertEqual(str(bill.invoice_date_due), "2026-03-20")
+        self.assertEqual(mirror.invoice_date_due, bill.invoice_date_due)
+        term_date = lambda move: move.line_ids.filtered(  # noqa: E731
+            lambda l: l.display_type == "payment_term").mapped("date_maturity")
+        self.assertEqual(term_date(mirror), term_date(bill))
+
+    def test_bill_analytic_edited_after_posting(self):
+        analytic = self._analytic_account()
+        bill = self._invoice(move_type="in_invoice", post=True)
+        bill.invoice_line_ids.analytic_distribution = {str(analytic.id): 100}
+        self.assertEqual(self._mirror(bill).invoice_line_ids.analytic_distribution,
+                         {str(analytic.id): 100})
+
+    def test_entry_analytic_edited_after_posting(self):
+        analytic = self._analytic_account()
+        entry = self._entry(post=True)
+        debit = entry.line_ids.filtered(lambda l: l.debit)
+        debit.analytic_distribution = {str(analytic.id): 100}
+        mirror_debit = self._mirror(entry).line_ids.filtered(lambda l: l.debit)
+        self.assertEqual(mirror_debit.analytic_distribution, {str(analytic.id): 100})
+
+    def test_entry_analytic_on_creation(self):
+        analytic = self._analytic_account()
+        entry = self._entry()
+        entry.line_ids.filtered(lambda l: l.debit).analytic_distribution = {str(analytic.id): 100}
+        entry.action_post()
+        mirror_debit = self._mirror(entry).line_ids.filtered(lambda l: l.debit)
+        self.assertEqual(mirror_debit.analytic_distribution, {str(analytic.id): 100})
+
+    def test_analytic_edit_missing_account_logged(self):
+        main_analytic = self._analytic_account(self.company, code="PX3", name="Main only")
+        bill = self._invoice(move_type="in_invoice", post=True)
+        bill.invoice_line_ids.analytic_distribution = {str(main_analytic.id): 100}
+        self.assertFalse(self._mirror(bill).invoice_line_ids.analytic_distribution)
+        log = self._logs(bill).sorted("id")[-1]
+        self.assertEqual((log.operation, log.sync_state), ("update", "error"))
+        self.assertIn("Main only", log.error_message)
+
     def test_invoice_deferral_period(self):
         if "deferred_start_date" not in self.env["account.move.line"]._fields:
             self.skipTest("no deferral management (account_accountant)")

@@ -79,6 +79,92 @@ class NvSyncEngine(models.AbstractModel):
                 )
 
     @api.model
+    def sync_posted_edits(self, source_moves):
+        """Fields Odoo lets the user edit on a posted invoice or entry, without
+        a reset to draft (so nothing is reposted), copied to its up-to-date
+        mirror: the due date of an invoice without payment term, the analytic
+        distribution of its lines, the due date of an entry's lines.
+        Non-blocking: a failure (e.g. a missing analytic account, a locked
+        period) is logged as an update error."""
+        for source in source_moves:
+            source_sudo = source.sudo()
+            mirror = source_sudo.nv_mirror_move_id
+            if (
+                source.state != 'posted' or source.is_mirror or source.origin_payment_id
+                or not mirror or source_sudo.nv_mirror_outdated or mirror.state == 'cancel'
+            ):
+                continue
+            official_co = mirror.company_id
+            mirror = mirror.with_env(self._mirror_env(official_co))
+            try:
+                move_vals, line_vals = self._posted_edit_vals(source, mirror, official_co)
+            except Exception as e:
+                # e.g. an analytic account missing in the official company
+                _logger.error("nv_dual_bookkeeping: update of %s failed: %s", source.name, e)
+                self._log(source, 'update', 'error', 'auto', target=mirror, error=str(e))
+                self._notify_sync_failure(source.name, str(e))
+                continue
+            if not move_vals and not line_vals:
+                continue
+
+            def step(mirror=mirror, move_vals=move_vals, line_vals=line_vals):
+                if move_vals:
+                    mirror.write(move_vals)
+                for line, vals in line_vals:
+                    line.write(vals)
+                return mirror
+            self._run_step(source, 'update', step, target=mirror)
+
+    def _posted_edit_vals(self, source, mirror, official_co):
+        """(mirror move values, [(mirror line, values)]) bringing the mirror in
+        line with the edits of its posted source. The lines are paired in
+        creation order (the mirror's lines were created from the source's in
+        that order) and only while their accounts still correspond."""
+        move_vals = {}
+        if source.is_invoice(include_receipts=True):
+            if (
+                not source.invoice_payment_term_id
+                and source.invoice_date_due != mirror.invoice_date_due
+            ):
+                move_vals['invoice_date_due'] = source.invoice_date_due
+            source_lines = source.invoice_line_ids
+            mirror_lines = mirror.invoice_line_ids
+        else:
+            source_lines = source.line_ids
+            mirror_lines = mirror.line_ids
+        source_lines = source_lines.sorted('id')
+        mirror_lines = mirror_lines.sorted('id')
+        if len(source_lines) != len(mirror_lines):
+            return move_vals, []
+        line_vals = []
+        for line, mirror_line in zip(source_lines, mirror_lines):
+            if line.display_type in ('line_section', 'line_subsection', 'line_note'):
+                continue
+            if self._get_mirror_account(line.account_id, official_co) != mirror_line.account_id:
+                return move_vals, []
+            vals = {}
+            distribution = self._map_analytic_distribution(
+                line.analytic_distribution, official_co) if line.analytic_distribution else False
+            if (distribution or False) != (mirror_line.analytic_distribution or False):
+                vals['analytic_distribution'] = distribution
+            if not source.is_invoice(include_receipts=True) and line.date_maturity != mirror_line.date_maturity:
+                vals['date_maturity'] = line.date_maturity
+            if vals:
+                line_vals.append((mirror_line, vals))
+        if source.is_invoice(include_receipts=True) and not source.invoice_payment_term_id:
+            # the due date of the receivable/payable line(s), set from the
+            # header's due date when the document has no payment term
+            source_terms = source.line_ids.filtered(lambda l: l.display_type == 'payment_term').sorted('id')
+            mirror_terms = mirror.line_ids.filtered(lambda l: l.display_type == 'payment_term').sorted('id')
+            if len(source_terms) == len(mirror_terms):
+                line_vals += [
+                    (mirror_line, {'date_maturity': line.date_maturity})
+                    for line, mirror_line in zip(source_terms, mirror_terms)
+                    if line.date_maturity != mirror_line.date_maturity
+                ]
+        return move_vals, line_vals
+
+    @api.model
     def check_mirror_locks(self, source_moves, action):
         """D2: refuse a change of these sources before it happens when the
         period of their posted mirror is locked in the Official Books company
@@ -397,8 +483,13 @@ class NvSyncEngine(models.AbstractModel):
                     'sequence': line.sequence,
                     **self._mirror_line_extra_vals(line, official_co),
                 }))
+            # The payment term is always set (False included): left out, the
+            # mirror took the official partner's default term, whose dates
+            # overrode the source's due date and its change on repost.
+            payment_term = self._map_payment_term(source_move.invoice_payment_term_id, official_co)
             vals.update({
                 'invoice_date': source_move.invoice_date or source_move.date,
+                'invoice_payment_term_id': payment_term.id,
                 'invoice_date_due': source_move.invoice_date_due,
                 'fiscal_position_id': False,  # avoid tax remapping by fiscal position
                 'payment_reference': source_move.payment_reference,
@@ -1027,6 +1118,27 @@ class NvSyncEngine(models.AbstractModel):
             if ids:
                 mapped[','.join(ids)] = percentage
         return mapped or False
+
+    def _map_payment_term(self, term, target_company):
+        """Payment term of a mirror invoice: a shared term (no company) or one
+        of the official company is kept, another company's term is matched
+        there by name; a missing one fails the sync (the due dates would
+        differ)."""
+        term = term.sudo()
+        if not term or not term.company_id or term.company_id == target_company:
+            return term
+        match = term.search([
+            ('name', '=', term.name),
+            ('company_id', 'in', (target_company.id, False)),
+        ], limit=1)
+        if not match:
+            raise UserError(_(
+                "Payment term '%(term)s' was not found in the official company "
+                "'%(company)s'. Create it there with the same name, or share it "
+                "between the companies, then retry the sync.",
+                term=term.display_name, company=target_company.name,
+            ))
+        return match
 
     def _map_partner_bank(self, bank, mirror_partner, target_company):
         """The partner bank account of a mirror payment: the same record when

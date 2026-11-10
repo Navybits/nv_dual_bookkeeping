@@ -578,7 +578,13 @@ class AccountMove(models.Model):
                         "Please contact your accounting manager."
                     ))
 
-        return super().write(vals)
+        result = super().write(vals)
+        if {'invoice_date_due', 'line_ids', 'invoice_line_ids'} & set(vals):
+            # editable on a posted document: nothing is reposted, so the
+            # mirror is updated here
+            self.env['nv.sync.engine'].sync_posted_edits(
+                self.filtered(lambda m: m.state == 'posted' and not m.is_mirror))
+        return result
 
     # -------------------------------------------------------------------------
     # action_post override
