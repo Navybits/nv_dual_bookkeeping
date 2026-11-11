@@ -69,7 +69,10 @@
             <!-- 3. O/NO toggle — inserted after the journal_id field -->
             <xpath expr="//field[@name='journal_id']" position="after">
 
-                <div class="o_dual_bookkeeping_badge d-flex align-items-center gap-2 mt-1">
+                <!-- Own label row so the group keeps label/value pairs aligned
+                     (a bare div shifted every field below it by one cell). -->
+                <label for="is_official" string="Official"/>
+                <div class="o_dual_bookkeeping_badge d-flex align-items-center gap-2">
 
                     <!-- Official badge -->
                     <span class="badge text-bg-success fs-6"
