@@ -1,0 +1,3 @@
+# Python caches (generated, differ per machine / Python version)
+__pycache__/
+*.py[cod]
