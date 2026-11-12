@@ -103,7 +103,10 @@ When an Official transaction is posted in an operating company:
 4. Each tax is matched by name and type (sale / purchase), then by amount when exactly
    one tax of that type fits; a missing or ambiguous tax fails the sync with its name
    (it is never dropped).
-5. The partner is matched by VAT, then name, then auto-created as a stub.
+5. The partner: a shared contact (no company) or one of the official company is used
+   as it is, so the mirror has exactly the source's contact. A contact of another
+   company is matched among the official company's and shared contacts by VAT and
+   name, then by name, else auto-created as a stub.
 6. A `nv.sync.log` record is written with `state='synced'` and its operation.
 7. If `auto_post_mirror=True`, the mirror is posted automatically.
 
@@ -175,6 +178,7 @@ All menus live under **Accounting → Dual Bookkeeping**:
 | Non-Official Transactions | account.move list filtered to is_official=False |
 | Sync Dashboard | nv.sync.log list with retry actions |
 | Link Official Journals | Journal mapping wizard |
+| Fix Mirror Partners | Gives existing mirrors exactly the contacts of their source (document, journal items, payment) without resetting anything to draft; reconciliations kept. *Find* lists the mirrors to fix, *Fix* applies. Mirrors in a locked period or secured (hashed) are listed as *Cannot Fix*. Sync managers only. |
 | Summary Report | Pivot: journal × O/NO with amount_total measure |
 
 ---
@@ -259,6 +263,12 @@ nv_dual_bookkeeping/
 ---
 
 ## Changelog
+
+### Unreleased (PR #2 follow-ups)
+
+- **Mirror partner**: the mirror used to take the first contact with the same VAT
+  (any company, a child contact, a branch, a duplicate) instead of the source's own
+  shared contact. Fixed; existing mirrors are repaired with **Fix Mirror Partners**.
 
 ### 19.0.1.0.2 (backport of the Odoo 20 rebuild decisions D2, D6, D7)
 

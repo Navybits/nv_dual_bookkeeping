@@ -1178,27 +1178,38 @@ class NvSyncEngine(models.AbstractModel):
     # Partner mapping
     # =========================================================================
 
-    def _map_partner(self, partner, target_company):
+    def _map_partner(self, partner, target_company, create=True):
         """
-        Find or create a partner in target_company context.
-        Search order: VAT → name → create stub.
+        The partner of a mirror document / line in target_company.
+
+        A shared contact (no company) or one of the official company is used
+        as it is: the mirror has exactly the source's contact. A contact of
+        another company is matched among the official company's and shared
+        contacts by VAT and name, then by name, else a stub is created (or,
+        with create=False, an empty recordset is returned).
+
+        A search on the VAT alone used to run first, over all contacts: it
+        returned any contact with that VAT (a child contact, a branch, a
+        duplicate) instead of the source's own contact.
         """
+        Partner = self.env['res.partner'].sudo()
         if not partner:
-            return self.env['res.partner']
+            return Partner
+        partner = partner.sudo()
+        if not partner.company_id or partner.company_id == target_company:
+            return partner
 
-        if partner.vat:
-            match = self.env['res.partner'].sudo().search([
-                ('vat', '=', partner.vat),
-                ('active', 'in', [True, False]),
-            ], limit=1)
-            if match:
-                return match
-
-        match = self.env['res.partner'].sudo().search([
-            ('name', '=ilike', partner.name),
+        domain = [
+            ('company_id', 'in', (target_company.id, False)),
             ('active', 'in', [True, False]),
-        ], limit=1)
-        if match:
+        ]
+        match = Partner
+        if partner.vat:
+            match = Partner.search(domain + [
+                ('vat', '=', partner.vat), ('name', '=ilike', partner.name),
+            ], limit=1)
+        match = match or Partner.search(domain + [('name', '=ilike', partner.name)], limit=1)
+        if match or not create:
             return match
 
         _logger.warning(
@@ -1219,6 +1230,150 @@ class NvSyncEngine(models.AbstractModel):
                 "partner id=%d from company '%s'."
             ) % (partner.id, partner.company_id.name if partner.company_id else '?'),
         })
+
+    # =========================================================================
+    # Repair: partners of existing mirrors (Fix Mirror Partners wizard)
+    # =========================================================================
+
+    # Stored fields Odoo recomputes when the partner of a document changes:
+    # their current value is written along with the partner, so the posted
+    # mirror only changes partner (its term lines, fiscal position, terms
+    # text... stay as they are).
+    _PARTNER_KEPT_MOVE_FIELDS = (
+        'fiscal_position_id', 'invoice_payment_term_id', 'narration',
+        'partner_bank_id', 'preferred_payment_method_line_id', 'invoice_user_id',
+    )
+
+    def mirror_partner_changes(self, source):
+        """What fixing the partners of the mirror of `source` changes:
+        (mirror, document values, [(mirror line, values)], payment values).
+        Raises UserError when a contact has no counterpart in the official
+        company (nothing is created here)."""
+        mirror = source.sudo().nv_mirror_move_id
+        official_co = mirror.company_id
+        mirror = mirror.with_env(self._mirror_env(official_co))
+
+        def mapped(partner):
+            match = self._map_partner(partner, official_co, create=False)
+            if partner and not match:
+                raise UserError(_(
+                    "Contact '%(partner)s' has no counterpart in '%(company)s'.",
+                    partner=partner.display_name, company=official_co.name,
+                ))
+            return match
+
+        def current(record, names):
+            return {
+                name: record._fields[name].convert_to_write(record[name], record)
+                for name in names if name in record._fields
+            }
+
+        move_vals = {}
+        partner = mapped(source.partner_id)
+        if mirror.partner_id != partner:
+            move_vals = {'partner_id': partner.id, **current(mirror, self._PARTNER_KEPT_MOVE_FIELDS)}
+            if mirror.is_invoice(include_receipts=True):
+                move_vals['partner_shipping_id'] = (
+                    mapped(source.partner_shipping_id) or partner).id
+
+        line_vals = []
+        for mirror_line, source_partner in self._paired_line_partners(source, mirror, official_co):
+            partner = mapped(source_partner)
+            if mirror_line.partner_id != partner:
+                # the account is written too: changing the partner of a
+                # receivable/payable line makes Odoo recompute its account,
+                # which would break the line's reconciliation
+                line_vals.append((mirror_line, {
+                    'partner_id': partner.id,
+                    'account_id': mirror_line.account_id.id,
+                }))
+
+        payment_vals = {}
+        mirror_payment, source_payment = mirror.origin_payment_id, source.origin_payment_id
+        if mirror_payment and source_payment:
+            partner = mapped(source_payment.partner_id)
+            if mirror_payment.partner_id != partner:
+                payment_vals = {'partner_id': partner.id}
+        return mirror, move_vals, line_vals, payment_vals
+
+    def _paired_line_partners(self, source, mirror, official_co):
+        """[(mirror line, partner of its source line)]. The lines are paired
+        in creation order when both entries have the same lines (accounts
+        corresponding); otherwise the invoice lines are paired in order and
+        the other lines (taxes, receivable/payable...) take the partner the
+        source's lines of the same kind all have."""
+        source_lines = source.line_ids.sorted('id')
+        mirror_lines = mirror.line_ids.sorted('id')
+
+        def same_account(line, mirror_line):
+            try:
+                return self._get_mirror_account(line.account_id, official_co) == mirror_line.account_id
+            except UserError:
+                return False
+
+        if len(source_lines) == len(mirror_lines) and all(
+            same_account(line, mirror_line)
+            for line, mirror_line in zip(source_lines, mirror_lines)
+        ):
+            return [(mirror_line, line.partner_id) for line, mirror_line in zip(source_lines, mirror_lines)]
+
+        pairs = []
+        source_products = source.invoice_line_ids.sorted('id')
+        mirror_products = mirror.invoice_line_ids.sorted('id')
+        if mirror_products and len(source_products) == len(mirror_products):
+            pairs += [
+                (mirror_line, line.partner_id)
+                for line, mirror_line in zip(source_products, mirror_products)
+                if line.display_type not in ('line_section', 'line_subsection', 'line_note')
+            ]
+        else:
+            mirror_products = mirror_lines.browse()
+        for mirror_line in mirror_lines - mirror_products:
+            partners = source_lines.filtered(
+                lambda line: line.display_type == mirror_line.display_type).partner_id
+            if len(partners) == 1:
+                pairs.append((mirror_line, partners))
+        return pairs
+
+    @api.model
+    def fix_mirror_partners(self, source_moves):
+        """Give the mirrors of `source_moves` the partners of their sources,
+        without resetting anything to draft. Each document is fixed in its
+        own savepoint; a locked period or a hashed (secured) mirror entry
+        refuses the change and is reported.
+
+        :return: {source id: (state, message)}, state 'fixed', 'ok' (nothing
+            to change) or 'error'
+        """
+        results = {}
+        for source in source_moves:
+            try:
+                with self.env.cr.savepoint():
+                    mirror, move_vals, line_vals, payment_vals = self.mirror_partner_changes(source)
+                    if not (move_vals or line_vals or payment_vals):
+                        results[source.id] = ('ok', False)
+                        continue
+                    if payment_vals:
+                        # low-level: write() would rebuild the posted entry's
+                        # lines from the payment (_synchronize_to_moves, no
+                        # context to skip it in 19.0); the entry and its lines
+                        # are fixed below
+                        payment = mirror.origin_payment_id
+                        payment._write(payment_vals)
+                        payment.invalidate_recordset(list(payment_vals))
+                    if move_vals:
+                        # partner_id is refused on a posted move unless
+                        # skip_readonly_check (used by Odoo itself); lock
+                        # dates and hashes are still checked on the lines
+                        mirror.with_context(skip_readonly_check=True).write(move_vals)
+                    for line, vals in line_vals:
+                        line.write(vals)
+            except Exception as e:
+                results[source.id] = ('error', str(e))
+                continue
+            results[source.id] = ('fixed', False)
+            self._log(source, 'update', 'synced', 'manual', target=mirror)
+        return results
 
     # =========================================================================
     # Bus notification
