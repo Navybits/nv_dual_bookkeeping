@@ -15,6 +15,11 @@ class NvMirrorPartnerFixWizard(models.TransientModel):
         'res.company', string='Company', required=True, readonly=True,
         default=lambda self: self.env.company,
     )
+    source_move_ids = fields.Many2many(
+        'account.move', string='Selected Documents', readonly=True,
+        help="Set when the wizard is opened from selected documents or payments "
+             "(Action menu): only these are checked. Empty: all documents.",
+    )
     line_ids = fields.One2many(
         'nv.mirror.partner.fix.wizard.line', 'wizard_id', string='Mirrors', readonly=True)
     searched = fields.Boolean()
@@ -27,12 +32,30 @@ class NvMirrorPartnerFixWizard(models.TransientModel):
             wizard.to_fix_count = len(wizard.line_ids.filtered(lambda l: l.state == 'to_fix'))
             wizard.error_count = len(wizard.line_ids.filtered(lambda l: l.state == 'error'))
 
+    @api.model
+    def default_get(self, fields_list):
+        """Opened from the Action menu of documents / payments: only the
+        selected ones are checked."""
+        res = super().default_get(fields_list)
+        model = self.env.context.get('active_model')
+        ids = self.env.context.get('active_ids') or []
+        if 'source_move_ids' in fields_list and ids and model in ('account.move', 'account.payment'):
+            records = self.env[model].browse(ids)
+            moves = records if model == 'account.move' else records.move_id
+            res['source_move_ids'] = [fields.Command.set(moves.ids)]
+            if len(moves.company_id) == 1:
+                res['company_id'] = moves.company_id.id
+        return res
+
     def _sources(self):
-        return self.env['account.move'].sudo().search([
+        domain = [
             ('company_id', '=', self.company_id.id),
             ('nv_mirror_move_id', '!=', False),
             ('nv_mirror_move_id.state', '!=', 'cancel'),
-        ])
+        ]
+        if self.source_move_ids:
+            domain.append(('id', 'in', self.source_move_ids.ids))
+        return self.env['account.move'].sudo().search(domain)
 
     def action_find(self):
         """List the mirrors whose partners differ from their source's."""

@@ -178,7 +178,7 @@ All menus live under **Accounting → Dual Bookkeeping**:
 | Non-Official Transactions | account.move list filtered to is_official=False |
 | Sync Dashboard | nv.sync.log list with retry actions |
 | Link Official Journals | Journal mapping wizard |
-| Fix Mirror Partners | Gives existing mirrors exactly the contacts of their source (document, journal items, payment) without resetting anything to draft; reconciliations kept. *Find* lists the mirrors to fix, *Fix* applies. Mirrors in a locked period or secured (hashed) are listed as *Cannot Fix*. Sync managers only. |
+| Fix Mirror Partners | Gives existing mirrors exactly the contacts of their source (document, journal items, payment) without resetting anything to draft; reconciliations kept. *Find* lists the mirrors to fix, *Fix* applies. From the menu it checks all documents; from **Action → Fix Mirror Partners** on selected invoices / entries / payments, only those (e.g. to try it on one document first). Mirrors in a locked period or secured (hashed) are listed as *Cannot Fix*. Sync managers only. |
 | Summary Report | Pivot: journal × O/NO with amount_total measure |
 
 ---

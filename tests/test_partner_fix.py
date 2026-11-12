@@ -111,3 +111,41 @@ class TestPartnerFix(DualBookkeepingCommon):
         self.assertEqual(line.state, "error")
         self.assertIn("Lock Date", line.message)
         self.assertEqual(mirror.partner_id, self.same_vat, "left as it was")
+
+    # ------------------------------------------------------------------
+    # Opened from the Action menu: only the selected documents
+    # ------------------------------------------------------------------
+
+    def _wizard_for(self, records):
+        return self.env["nv.mirror.partner.fix.wizard"].sudo().with_context(
+            active_model=records._name, active_ids=records.ids).create({})
+
+    def test_only_selected_documents(self):
+        selected = self._invoice(partner=self.customer, post=True)
+        other = self._invoice(partner=self.customer, post=True)
+        for invoice in (selected, other):
+            self._corrupt(self._mirror(invoice), self.same_vat)
+
+        wizard = self._wizard_for(selected)
+        self.assertEqual(wizard.source_move_ids, selected)
+        wizard.action_find()
+        self.assertEqual(wizard.line_ids.source_move_id, selected)
+        wizard.action_fix()
+        self.assertEqual(self._mirror(selected).partner_id, self.customer)
+        self.assertEqual(self._mirror(other).partner_id, self.same_vat, "not selected: unchanged")
+
+    def test_selected_payment(self):
+        payment = self._payment(partner=self.customer)
+        self._corrupt(self._mirror(payment.move_id), self.same_vat)
+        wizard = self._wizard_for(payment)
+        self.assertEqual(wizard.source_move_ids, payment.move_id)
+        wizard.action_find()
+        wizard.action_fix()
+        self.assertEqual(self._mirror(payment.move_id).origin_payment_id.partner_id, self.customer)
+
+    def test_selected_document_without_anything_to_fix(self):
+        invoice = self._invoice(partner=self.customer, post=True)
+        wizard = self._wizard_for(invoice)
+        wizard.action_find()
+        self.assertTrue(wizard.searched)
+        self.assertFalse(wizard.line_ids)

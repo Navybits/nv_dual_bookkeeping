@@ -14,6 +14,12 @@
                     cannot be changed and are listed as <em>Cannot Fix</em>.
                 </div>
                 <field name="searched" invisible="1"/>
+                <group invisible="not source_move_ids">
+                    <field name="source_move_ids" widget="many2many_tags"/>
+                </group>
+                <div class="alert alert-success" role="status" invisible="not searched or line_ids">
+                    Nothing to fix: the mirrors have the same partners as their documents.
+                </div>
                 <group invisible="not searched">
                     <field name="company_id" options="{'no_open': True}"/>
                     <field name="to_fix_count" string="To fix"/>
@@ -51,6 +57,27 @@
         <field name="res_model">nv.mirror.partner.fix.wizard</field>
         <field name="view_mode">form</field>
         <field name="target">new</field>
+    </record>
+
+    <!-- Action menu: only the selected documents / payments -->
+    <record id="action_nv_mirror_partner_fix_wizard_moves" model="ir.actions.act_window">
+        <field name="name">Fix Mirror Partners</field>
+        <field name="res_model">nv.mirror.partner.fix.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_sync_manager')])]"/>
+    </record>
+
+    <record id="action_nv_mirror_partner_fix_wizard_payments" model="ir.actions.act_window">
+        <field name="name">Fix Mirror Partners</field>
+        <field name="res_model">nv.mirror.partner.fix.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="account.model_account_payment"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_sync_manager')])]"/>
     </record>
 
 </odoo>
