@@ -236,13 +236,11 @@ class AccountPayment(models.Model):
         self._nv_check_locked_after_number(vals)
         if 'is_official' in vals:
             for payment in self:
-                if payment.state == 'posted':
-                    raise UserError(_(
-                        "Cannot change the Official/Non-Official status of payment '%s' "
-                        "after it has been posted."
-                    ) % payment.name)
-                # Same as account.move Rule 1b: the reset entry keeps its number
-                # on repost, so its stream cannot be switched.
+                # Same as account.move Rule 1b: a payment holding a number
+                # (posted, or reset to draft: it keeps its number on repost)
+                # cannot switch stream. Covers posted payments too: a
+                # state == 'posted' check never matched (Odoo 19 payments are
+                # in_process / paid).
                 move = payment.move_id
                 if (
                     bool(vals['is_official']) != payment.is_official
