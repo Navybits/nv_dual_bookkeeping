@@ -831,6 +831,13 @@ class AccountMove(models.Model):
             'context': {'default_move_id': self.id},
         }
 
+    def action_compare_with_mirror(self):
+        """Compare with Mirror button: the differences between these
+        documents and their mirror (read-only)."""
+        wizard = self.env['nv.mirror.check.wizard'].with_context(
+            active_model='account.move', active_ids=self.ids).create({})
+        return wizard.action_check()
+
     def action_manual_sync(self):
         """
         Manually trigger sync to the official company for a single posted move.

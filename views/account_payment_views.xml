@@ -64,6 +64,12 @@
                         class="btn btn-secondary"
                         invisible="not is_official or is_mirror or state not in ('in_process', 'paid') or company_is_official_company"
                         groups="account.group_account_manager"/>
+                <button name="action_compare_with_mirror"
+                        type="object"
+                        string="Compare with Mirror"
+                        class="btn btn-secondary"
+                        invisible="not is_official or is_mirror or state == 'draft' or not company_official_company_id"
+                        groups="account.group_account_manager"/>
             </xpath>
 
             <!-- 3. O/NO toggle — inserted after the journal_id field -->

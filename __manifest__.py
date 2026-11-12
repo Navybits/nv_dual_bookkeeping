@@ -21,6 +21,7 @@
         'wizard/views/account_payment_register_views.xml',
         'wizard/views/nv_official_change_wizard_views.xml',
         'wizard/views/nv_mirror_partner_fix_wizard_views.xml',
+        'wizard/views/nv_mirror_check_wizard_views.xml',
 
         # Model views
         'views/res_partner_views.xml',

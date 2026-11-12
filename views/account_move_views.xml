@@ -125,6 +125,12 @@
                         class="btn btn-secondary"
                         invisible="not is_official or is_mirror or state != 'posted' or company_is_official_company or origin_payment_id"
                         groups="account.group_account_manager"/>
+                <button name="action_compare_with_mirror"
+                        type="object"
+                        string="Compare with Mirror"
+                        class="btn btn-secondary"
+                        invisible="not is_official or is_mirror or state == 'draft' or not company_official_company_id"
+                        groups="account.group_account_manager"/>
             </xpath>
 
         </field>

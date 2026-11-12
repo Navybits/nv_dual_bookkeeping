@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_nv_mirror_check_wizard_form" model="ir.ui.view">
+        <field name="name">nv.mirror.check.wizard.form</field>
+        <field name="model">nv.mirror.check.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Compare with Mirror">
+                <div class="alert alert-info" role="alert" invisible="checked">
+                    Compares each document with its mirror in the Official Books
+                    company: header, lines, totals per account, payment and
+                    reconciliations. Read-only: nothing is changed.
+                </div>
+                <field name="checked" invisible="1"/>
+                <group>
+                    <field name="company_id" options="{'no_open': True}"/>
+                    <field name="source_move_ids" widget="many2many_tags" invisible="not source_move_ids"/>
+                    <label for="date_from" string="Period" invisible="source_move_ids"/>
+                    <div class="o_row" invisible="source_move_ids">
+                        <field name="date_from"/> → <field name="date_to"/>
+                    </div>
+                </group>
+                <group invisible="not checked">
+                    <field name="checked_count"/>
+                    <field name="document_count"/>
+                </group>
+                <div class="alert alert-success" role="status" invisible="not checked or line_ids">
+                    No differences: every mirror matches its document.
+                </div>
+                <field name="line_ids" nolabel="1" invisible="not checked or not line_ids">
+                    <list>
+                        <field name="source_move_id"/>
+                        <field name="mirror_move_id"/>
+                        <field name="group"/>
+                        <field name="label"/>
+                        <field name="source_value"/>
+                        <field name="mirror_value"/>
+                    </list>
+                </field>
+                <footer>
+                    <button name="action_check" type="object" string="Compare"
+                            class="btn-primary" invisible="checked"/>
+                    <button name="action_check" type="object" string="Compare Again"
+                            class="btn-secondary" invisible="not checked"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Menu: the Official documents of a period -->
+    <record id="action_nv_mirror_check_wizard" model="ir.actions.act_window">
+        <field name="name">Compare with Mirror</field>
+        <field name="res_model">nv.mirror.check.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- Action menu: the selected documents / payments -->
+    <record id="action_nv_mirror_check_wizard_moves" model="ir.actions.act_window">
+        <field name="name">Compare with Mirror</field>
+        <field name="res_model">nv.mirror.check.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="group_ids" eval="[Command.set([ref('account.group_account_manager')])]"/>
+    </record>
+
+    <record id="action_nv_mirror_check_wizard_payments" model="ir.actions.act_window">
+        <field name="name">Compare with Mirror</field>
+        <field name="res_model">nv.mirror.check.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="account.model_account_payment"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="group_ids" eval="[Command.set([ref('account.group_account_manager')])]"/>
+    </record>
+
+</odoo>

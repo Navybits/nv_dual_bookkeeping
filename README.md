@@ -178,6 +178,7 @@ All menus live under **Accounting → Dual Bookkeeping**:
 | Non-Official Transactions | account.move list filtered to is_official=False |
 | Sync Dashboard | nv.sync.log list with retry actions |
 | Link Official Journals | Journal mapping wizard |
+| Compare with Mirror | Read-only check of documents against their mirror: header (number, dates, due date, payment term, reference, partner, journal, rates, status), each line (account by code, label, quantity, price, discount, taxes, partner, analytic, deferral dates, amounts), totals and balance per account, payment fields, payment status and reconciliations. Menu: the Official documents of a period; Action menu / form button: the selected documents. Shared records must be identical, company-specific ones match by code / name. Accounting managers. |
 | Fix Mirror Partners | Gives existing mirrors exactly the contacts of their source (document, journal items, payment) without resetting anything to draft; reconciliations kept. *Find* lists the mirrors to fix, *Fix* applies. From the menu it checks all documents; from **Action → Fix Mirror Partners** on selected invoices / entries / payments, only those (e.g. to try it on one document first). Mirrors in a locked period or secured (hashed) are listed as *Cannot Fix*. Sync managers only. |
 | Summary Report | Pivot: journal × O/NO with amount_total measure |
 
@@ -269,6 +270,8 @@ nv_dual_bookkeeping/
 - **Mirror partner**: the mirror used to take the first contact with the same VAT
   (any company, a child contact, a branch, a duplicate) instead of the source's own
   shared contact. Fixed; existing mirrors are repaired with **Fix Mirror Partners**.
+- **Compare with Mirror**: lists the differences between documents and their mirror (read-only);
+  the tests run it after each sync scenario, so a field the sync stops copying fails them.
 
 ### 19.0.1.0.2 (backport of the Odoo 20 rebuild decisions D2, D6, D7)
 

@@ -405,3 +405,8 @@ class AccountPayment(models.Model):
         if not self.move_id:
             raise UserError(_("No journal entry is linked to this payment."))
         return self.move_id.action_change_to_non_official()
+
+    def action_compare_with_mirror(self):
+        if not self.move_id:
+            raise UserError(_("No journal entry is linked to this payment."))
+        return self.move_id.action_compare_with_mirror()

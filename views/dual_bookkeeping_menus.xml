@@ -99,6 +99,13 @@
               sequence="40"
               groups="nv_dual_bookkeeping.group_sync_manager"/>
 
+    <menuitem id="menu_dual_bookkeeping_compare_mirrors"
+              name="Compare with Mirror"
+              parent="menu_dual_bookkeeping_root"
+              action="action_nv_mirror_check_wizard"
+              sequence="35"
+              groups="account.group_account_manager"/>
+
     <menuitem id="menu_dual_bookkeeping_fix_mirror_partners"
               name="Fix Mirror Partners"
               parent="menu_dual_bookkeeping_root"
