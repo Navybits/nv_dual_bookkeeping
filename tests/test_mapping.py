@@ -91,3 +91,29 @@ class TestMapping(DualBookkeepingCommon):
             invoice = self._taxed_invoice(self._tax("NV VAT 7.5%", self.company))
         self.assertFalse(self._mirror(invoice))
         self.assertIn("several matches", self._last_error(invoice).error_message)
+
+    # ------------------------------------------------------------------
+    # Partner: the mirror keeps the same contact
+    # ------------------------------------------------------------------
+
+    def test_mirror_keeps_same_partner_when_vat_shared(self):
+        """Branches of one group share a VAT: each mirror keeps its own branch
+        (the VAT search used to return the first branch for all of them)."""
+        Partner = self.env["res.partner"]
+        first = Partner.create({"name": "Group - First branch", "vat": "NVSHAREDVAT1", "is_official": True})
+        other = Partner.create({"name": "Group - Other branch", "vat": "NVSHAREDVAT1", "is_official": True})
+        for partner in (first, other):
+            invoice = self._invoice(partner=partner, post=True)
+            self.assertEqual(self._mirror(invoice).partner_id, partner)
+        payment = self._payment(partner=other)
+        self.assertEqual(self._mirror(payment.move_id).partner_id, other)
+
+    def test_mirror_partner_restricted_to_main_uses_search(self):
+        """A contact restricted to the operating company cannot be used in the
+        official one: the former VAT search still applies."""
+        engine = self.env["nv.sync.engine"]
+        main_only = self.env["res.partner"].create(
+            {"name": "Main only", "vat": "NVMAINONLY1", "company_id": self.company.id})
+        official_twin = self._both()["res.partner"].create(
+            {"name": "Main only", "vat": "NVMAINONLY1", "company_id": self.official.id})
+        self.assertEqual(engine._map_partner(main_only, self.official), official_twin)

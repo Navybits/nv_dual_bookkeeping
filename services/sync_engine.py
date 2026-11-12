@@ -1180,11 +1180,27 @@ class NvSyncEngine(models.AbstractModel):
 
     def _map_partner(self, partner, target_company):
         """
-        Find or create a partner in target_company context.
-        Search order: VAT → name → create stub.
+        The mirror uses the SAME contact as the source when that contact can be
+        used in target_company. Searching by VAT first returned the first branch
+        of a group sharing one VAT (e.g. Wonders - SALAMEH JBEIL -> Wonders -
+        ADMA). If the contact is not available in the official company yet
+        (company_ids, from nv_pr_prunelle when installed), it is added there.
+
+        Only a contact restricted to another company (company_id) falls back to
+        the former search: VAT → name → create stub.
         """
         if not partner:
             return self.env['res.partner']
+
+        partner = partner.sudo()
+        if not partner.company_id or partner.company_id == target_company:
+            if (
+                'company_ids' in partner._fields
+                and partner.company_ids
+                and target_company not in partner.company_ids
+            ):
+                partner.company_ids = [(4, target_company.id)]
+            return partner
 
         if partner.vat:
             match = self.env['res.partner'].sudo().search([
