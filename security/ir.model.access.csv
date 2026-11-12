@@ -8,3 +8,4 @@ access_nv_mirror_partner_fix_wizard,nv.mirror.partner.fix.wizard sync manager,mo
 access_nv_mirror_partner_fix_wizard_line,nv.mirror.partner.fix.wizard.line sync manager,model_nv_mirror_partner_fix_wizard_line,nv_dual_bookkeeping.group_sync_manager,1,1,1,1
 access_nv_mirror_check_wizard,nv.mirror.check.wizard manager,model_nv_mirror_check_wizard,account.group_account_manager,1,1,1,1
 access_nv_mirror_check_wizard_line,nv.mirror.check.wizard.line manager,model_nv_mirror_check_wizard_line,account.group_account_manager,1,1,1,1
+access_nv_mirror_check_wizard_doc,nv.mirror.check.wizard.doc manager,model_nv_mirror_check_wizard_doc,account.group_account_manager,1,1,1,1

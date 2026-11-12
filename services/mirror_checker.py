@@ -41,10 +41,14 @@ class NvMirrorChecker(models.AbstractModel):
         mirror = source.nv_mirror_move_id
         if not mirror:
             if source.state == 'posted' and source.is_official and not source.is_mirror:
-                diffs.append(self._diff('link', _("Mirror"), source.name, _("missing")))
+                diffs.append(self._diff('link', _("Mirror"), source.name, _("missing"), key='missing'))
             return diffs
         official_co = mirror.company_id
         self._compare_link(source, mirror, diffs)
+        if source.state != 'posted':
+            # a draft source is rewritten into its mirror when posted again,
+            # a cancelled one only needs a cancelled mirror
+            return diffs
         self._compare_header(source, mirror, official_co, diffs)
         if source.origin_payment_id or mirror.origin_payment_id:
             self._compare_payment(source.origin_payment_id, mirror.origin_payment_id, official_co, diffs)
@@ -59,9 +63,10 @@ class NvMirrorChecker(models.AbstractModel):
             self._compare_reconciliation(source, mirror, diffs)
         return diffs
 
-    def _diff(self, group, label, source_value, mirror_value):
+    def _diff(self, group, label, source_value, mirror_value, key=None):
         return {
             'group': group,
+            'key': key,
             'label': label,
             'source': self._text(source_value),
             'mirror': self._text(mirror_value),
@@ -72,13 +77,15 @@ class NvMirrorChecker(models.AbstractModel):
     # =========================================================================
 
     def _compare_link(self, source, mirror, diffs):
-        if source.nv_mirror_outdated:
+        if source.nv_mirror_outdated and source.state == 'posted':
             diffs.append(self._diff(
-                'link', _("Mirror up to date"), _("changed since the sync"), _("not rewritten yet")))
+                'link', _("Mirror up to date"), _("changed since the sync"), _("not rewritten yet"),
+                key='outdated'))
         expected = self._expected_mirror_states(source)
         if mirror.state not in expected:
             diffs.append(self._diff(
-                'link', _("Status"), self._selection(source, 'state'), self._selection(mirror, 'state')))
+                'link', _("Status"), self._selection(source, 'state'), self._selection(mirror, 'state'),
+                key='status'))
 
     def _expected_mirror_states(self, source):
         if source.state == 'cancel':
@@ -92,7 +99,7 @@ class NvMirrorChecker(models.AbstractModel):
         return ('draft', 'posted')  # drafts for review, posted by hand
 
     def _compare_header(self, source, mirror, official_co, diffs):
-        add = lambda label, a, b: diffs.append(self._diff('header', label, a, b))  # noqa: E731
+        add = lambda label, a, b, key=None: diffs.append(self._diff('header', label, a, b, key))  # noqa: E731
         if mirror.name != source.name and mirror.state == 'posted':
             add(_("Number"), source.name, mirror.name)
         if mirror.move_type != source.move_type:
@@ -102,25 +109,25 @@ class NvMirrorChecker(models.AbstractModel):
             add(_("Journal"), expected_journal or source.journal_id, mirror.journal_id)
         for name in ('date', 'ref', 'currency_id'):
             if not self._same_value(source[name], mirror[name]):
-                add(source._fields[name].get_description(self.env)['string'], source[name], mirror[name])
+                add(source._fields[name].get_description(self.env)['string'], source[name], mirror[name], name)
         if not self._same_partner(source.partner_id, mirror.partner_id, official_co):
-            add(_("Partner"), source.partner_id, mirror.partner_id)
+            add(_("Partner"), source.partner_id, mirror.partner_id, 'partner')
         for name in ('rate_main_second', 'set_manual_vat_rate', 'manual_rate_vat'):
             if name in source._fields and not self._same_value(source[name], mirror[name], RATE_PRECISION):
                 add(source._fields[name].get_description(self.env)['string'], source[name], mirror[name])
         if source.is_invoice(include_receipts=True):
             for name in ('invoice_date', 'invoice_date_due', 'payment_reference'):
                 if not self._same_value(source[name], mirror[name]):
-                    add(source._fields[name].get_description(self.env)['string'], source[name], mirror[name])
+                    add(source._fields[name].get_description(self.env)['string'], source[name], mirror[name], name)
             if not self._same_by_name(source.invoice_payment_term_id, mirror.invoice_payment_term_id, official_co):
                 add(_("Payment Terms"), source.invoice_payment_term_id, mirror.invoice_payment_term_id)
             # a draft mirror (auto-post off) cannot be reconciled yet
             if mirror.state == 'posted' and not self._same_value(source.payment_state, mirror.payment_state):
                 add(_("Payment Status"), self._selection(source, 'payment_state'),
-                    self._selection(mirror, 'payment_state'))
+                    self._selection(mirror, 'payment_state'), 'payment_state')
 
     def _compare_payment(self, payment, mirror_payment, official_co, diffs):
-        add = lambda label, a, b: diffs.append(self._diff('payment', label, a, b))  # noqa: E731
+        add = lambda label, a, b, key=None: diffs.append(self._diff('payment', label, a, b, key))  # noqa: E731
         if not payment or not mirror_payment:
             add(_("Payment"), payment.name if payment else _("none"),
                 mirror_payment.name if mirror_payment else _("none"))
@@ -130,9 +137,9 @@ class NvMirrorChecker(models.AbstractModel):
             if name not in payment._fields:
                 continue
             if not self._same_value(payment[name], mirror_payment[name], RATE_PRECISION if 'rate' in name else AMOUNT_PRECISION):
-                add(payment._fields[name].get_description(self.env)['string'], payment[name], mirror_payment[name])
+                add(payment._fields[name].get_description(self.env)['string'], payment[name], mirror_payment[name], name)
         if not self._same_partner(payment.partner_id, mirror_payment.partner_id, official_co):
-            add(_("Partner"), payment.partner_id, mirror_payment.partner_id)
+            add(_("Partner"), payment.partner_id, mirror_payment.partner_id, 'partner')
         if mirror_payment.journal_id != payment.journal_id.official_journal_id:
             add(_("Journal"), payment.journal_id.official_journal_id or payment.journal_id, mirror_payment.journal_id)
         if payment.payment_method_line_id.name != mirror_payment.payment_method_line_id.name:
@@ -161,9 +168,9 @@ class NvMirrorChecker(models.AbstractModel):
             diffs.append(self._diff('lines', _("Number of lines"), len(lines), len(mirror_lines)))
             return
         for index, (line, mirror_line) in enumerate(zip(lines, mirror_lines), start=1):
-            add = lambda label, a, b, i=index, l=line: diffs.append(  # noqa: E731
+            add = lambda label, a, b, key=None, i=index, l=line: diffs.append(  # noqa: E731
                 self._diff('lines', _("Line %(n)s (%(label)s): %(field)s",
-                                      n=i, label=(l.name or '')[:40], field=label), a, b))
+                                      n=i, label=(l.name or '')[:40], field=label), a, b, key))
             if line.display_type != mirror_line.display_type:
                 add(_("Type"), line.display_type, mirror_line.display_type)
                 continue
@@ -183,14 +190,14 @@ class NvMirrorChecker(models.AbstractModel):
             names += ['deferred_start_date', 'deferred_end_date']
             for name in names:
                 if name in line._fields and not self._same_value(line[name], mirror_line[name]):
-                    add(line._fields[name].get_description(self.env)['string'], line[name], mirror_line[name])
+                    add(line._fields[name].get_description(self.env)['string'], line[name], mirror_line[name], name)
             if not entry and not self._same_taxes(line.tax_ids, mirror_line.tax_ids):
                 add(_("Taxes"), line.tax_ids, mirror_line.tax_ids)
             if not self._same_partner(line.partner_id, mirror_line.partner_id, official_co):
-                add(_("Partner"), line.partner_id, mirror_line.partner_id)
+                add(_("Partner"), line.partner_id, mirror_line.partner_id, 'partner')
             if not self._same_analytic(line.analytic_distribution, mirror_line.analytic_distribution):
                 add(_("Analytic"), self._analytic_text(line.analytic_distribution),
-                    self._analytic_text(mirror_line.analytic_distribution))
+                    self._analytic_text(mirror_line.analytic_distribution), 'analytic')
 
     def _compare_totals(self, source, mirror, diffs):
         for name in ('amount_untaxed', 'amount_tax', 'amount_total'):
@@ -235,10 +242,61 @@ class NvMirrorChecker(models.AbstractModel):
         expected = counterparts(source).nv_mirror_move_id
         actual = counterparts(mirror).filtered('is_mirror')
         if expected != actual:
+            # only missing ones can be added in place; an extra one in the
+            # mirror needs the rewrite (its reconciliations are redone)
             diffs.append(self._diff(
                 'reconciliation', _("Reconciled with"),
                 ', '.join(sorted(counterparts(source).mapped('name'))) or _("nothing"),
-                ', '.join(sorted(actual.mapped('name'))) or _("nothing")))
+                ', '.join(sorted(actual.mapped('name'))) or _("nothing"),
+                key='missing' if not (actual - expected) else 'extra'))
+
+    # =========================================================================
+    # Suggested fix
+    # =========================================================================
+
+    # (group, key) of the differences fixed in place on a posted mirror
+    # (fields Odoo lets change on a posted entry, reconciliations to add, a
+    # status to set); any other difference needs the rewrite.
+    LIGHT = {
+        ('link', 'status'),
+        ('header', 'partner'), ('header', 'ref'), ('header', 'payment_reference'),
+        ('header', 'payment_state'),
+        ('lines', 'partner'), ('lines', 'analytic'), ('lines', 'date_maturity'),
+        ('payment', 'partner'), ('payment', 'memo'),
+        ('reconciliation', 'missing'),
+    }
+
+    @api.model
+    def classify(self, source, diffs):
+        """(fix, reason) for a document and its differences, fix being
+        'ok' (nothing to do), 'light' (fixed in place), 'rewrite' (the mirror
+        is rebuilt from the document) or 'cannot'. The strongest one any of
+        its differences needs applies to the whole document."""
+        if not diffs:
+            return 'ok', False
+        source = source.sudo()
+        mirror = source.nv_mirror_move_id
+        light = all(
+            (d['group'], d['key']) in self.LIGHT
+            # the due date is set in place only without payment term (with
+            # one, it comes from the term lines)
+            or (d['group'], d['key']) == ('header', 'invoice_date_due')
+            and not source.invoice_payment_term_id
+            for d in diffs
+        )
+        fix = 'light' if light else 'rewrite'
+        if fix == 'rewrite' and source.state != 'posted':
+            return 'cannot', _("The document is not posted: its mirror is rewritten when it is posted.")
+        if mirror and mirror.state == 'posted':
+            if mirror.inalterable_hash:
+                return 'cannot', _("The mirror %s is secured (hashed): it cannot be changed.", mirror.name)
+            violated = mirror.company_id._get_violated_lock_dates(
+                mirror.date, bool(mirror.line_ids.tax_ids or mirror.line_ids.tax_line_id), mirror.journal_id)
+            if violated:
+                return 'cannot', _("The mirror %(mirror)s is in a locked period (%(locks)s).",
+                                   mirror=mirror.name,
+                                   locks=mirror.company_id._format_lock_dates(violated))
+        return fix, False
 
     # =========================================================================
     # Rules

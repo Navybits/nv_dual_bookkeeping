@@ -1394,6 +1394,66 @@ class NvSyncEngine(models.AbstractModel):
         return results
 
     # =========================================================================
+    # Repair: differences found by Compare with Mirror
+    # =========================================================================
+
+    @api.model
+    def repair_mirror(self, source, fix):
+        """Repair the mirror of `source` (Compare with Mirror), the source is
+        never changed. Raises on failure; the caller runs it in a savepoint.
+
+        - 'light': in place, no reset: status (post / cancel / reset to draft
+          as its source), partners, the fields editable on a posted entry
+          (analytic, due date without term, entry due dates, references,
+          payment memo) and missing reconciliations;
+        - 'rewrite': the mirror is rewritten from its source as on a repost
+          (reset, lines and header rewritten, same number, posted again,
+          reconciliations redone), or created when it is missing.
+        """
+        source = source.sudo()
+        if fix == 'rewrite':
+            if source.nv_mirror_move_id:
+                source.nv_mirror_outdated = True
+            if not self.sync_move(source, triggered_by='manual'):
+                log = self.env['nv.sync.log'].sudo().search(
+                    [('source_move_id', '=', source.id)], order='id desc', limit=1)
+                raise UserError(log.error_message or _("The mirror could not be rewritten."))
+            return
+
+        mirror = source.nv_mirror_move_id
+        official_co = mirror.company_id
+        mirror = mirror.with_env(self._mirror_env(official_co))
+        if source.state == 'cancel':
+            if mirror.state != 'cancel':
+                self._cancel(source)
+            return
+        if source.state == 'draft':
+            if mirror.state == 'posted':
+                self._reset(source)
+            return
+
+        if mirror.state == 'draft':
+            if mirror.origin_payment_id:
+                mirror.origin_payment_id.action_post()
+            else:
+                mirror.action_post()
+        mirror, move_vals, line_vals, payment_vals = self.mirror_partner_changes(source, apply=True)
+        if move_vals or line_vals or payment_vals:
+            result = self.fix_mirror_partners(source)[source.id]
+            if result[0] == 'error':
+                raise UserError(result[1])
+        refs = {
+            name: source[name] for name in ('ref', 'payment_reference')
+            if (source[name] or False) != (mirror[name] or False)
+        }
+        if refs:
+            mirror.write(refs)
+        self.sync_posted_edits(source)
+        if source.origin_payment_id:
+            self.sync_payment_memo(source.origin_payment_id)
+        self._sync_existing_reconciliations(source, mirror, official_co)
+
+    # =========================================================================
     # Bus notification
     # =========================================================================
 

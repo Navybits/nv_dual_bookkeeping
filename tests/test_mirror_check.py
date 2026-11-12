@@ -19,6 +19,8 @@ class TestMirrorCheck(DualBookkeepingCommon):
             cls.env["account.analytic.plan"].sudo().create({"name": "Projects"})
         cls.analytic = cls.env["account.analytic.account"].sudo().create(
             {"name": "Shared project", "plan_id": plan.id, "company_id": False})
+        cls.env.user.sudo().write({"group_ids": [Command.link(
+            cls.env.ref("nv_dual_bookkeeping.group_sync_manager").id)]})
         cls.term = cls.env["account.payment.term"].sudo().create({
             "name": "45 days",
             "line_ids": [Command.create({"value": "percent", "value_amount": 100.0, "nb_days": 45})],
@@ -119,7 +121,16 @@ class TestMirrorCheck(DualBookkeepingCommon):
     def test_outdated_mirror(self):
         invoice = self._invoice(post=True)
         invoice.button_draft()
+        self.assertEqual(self._labels(invoice), [], "reset with its document: expected")
+        # posted again, but the rewrite fails (analytic account missing in
+        # the official company): the mirror stays out of date
+        main_only = self.env["account.analytic.account"].sudo().create({
+            "name": "Main only", "code": "MO3", "plan_id": self.analytic.plan_id.id,
+            "company_id": self.company.id})
+        invoice.invoice_line_ids.analytic_distribution = {str(main_only.id): 100}
+        invoice.action_post()
         self.assertIn(("link", "Mirror up to date"), self._labels(invoice))
+        self.assertEqual(self._classify(invoice), "rewrite")
 
     # ------------------------------------------------------------------
     # Wizard
@@ -134,12 +145,12 @@ class TestMirrorCheck(DualBookkeepingCommon):
         Wizard = self.env["nv.mirror.check.wizard"].sudo().with_company(self.company)
         wizard = Wizard.create({"date_from": "2026-01-01", "date_to": "2026-01-31"})
         wizard.action_check()
-        self.assertEqual(wizard.line_ids.source_move_id, january)
+        self.assertEqual(wizard.doc_ids.source_move_id, january)
         self.assertEqual(wizard.document_count, 1)
 
         selected = Wizard.with_context(active_model="account.move", active_ids=march.ids).create({})
         selected.action_check()
-        self.assertEqual(selected.line_ids.source_move_id, march)
+        self.assertEqual(selected.doc_ids.source_move_id, march)
 
     def test_form_button(self):
         invoice = self._invoice(post=True)
@@ -147,7 +158,7 @@ class TestMirrorCheck(DualBookkeepingCommon):
         wizard = self.env["nv.mirror.check.wizard"].sudo().browse(action["res_id"])
         self.assertTrue(wizard.checked)
         self.assertEqual(wizard.checked_count, 1)
-        self.assertFalse(wizard.line_ids)
+        self.assertFalse(wizard.doc_ids)
 
     # ------------------------------------------------------------------
     # The sync itself: after each scenario the mirror matches
@@ -191,3 +202,121 @@ class TestMirrorCheck(DualBookkeepingCommon):
             moves.append(invoice)
         for move in moves:
             self.assertEqual(self._compare(move), [], move.name)
+
+    # ------------------------------------------------------------------
+    # Fixing (per document)
+    # ------------------------------------------------------------------
+
+    def _check(self, *moves):
+        wizard = self.env["nv.mirror.check.wizard"].sudo().with_context(
+            active_model="account.move", active_ids=[m.id for m in moves]).create({})
+        wizard.action_check()
+        return wizard
+
+    def _classify(self, move):
+        checker = self.env["nv.mirror.checker"]
+        return checker.classify(move, checker.compare(move))[0]
+
+    def test_light_fix_in_place(self):
+        invoice = self._invoice()
+        invoice.invoice_line_ids.analytic_distribution = {str(self.analytic.id): 100}
+        invoice.action_post()
+        self._pay(invoice)
+        mirror = self._mirror(invoice)
+        other = self.env["res.partner"].create({"name": "Wrong contact"})
+        self._sql("UPDATE account_move SET partner_id = %(p)s, commercial_partner_id = %(p)s WHERE id = %(m)s;"
+                  "UPDATE account_move_line SET partner_id = %(p)s WHERE move_id = %(m)s;"
+                  "UPDATE account_move_line SET analytic_distribution = NULL WHERE move_id = %(m)s",
+                  {"p": other.id, "m": mirror.id})
+        mirror_partials = mirror.line_ids.matched_credit_ids | mirror.line_ids.matched_debit_ids
+        mirror_partials.sudo().unlink()
+        self.assertEqual(self._classify(invoice), "light")
+
+        wizard = self._check(invoice)
+        doc = wizard.doc_ids
+        self.assertEqual(doc.fix, "light")
+        self.assertTrue(doc.selected, "light fixes are ticked")
+        self.assertGreaterEqual(doc.difference_count, 3)
+        wizard.action_fix()
+        self.assertEqual(doc.state, "fixed", doc.message)
+        self.assertEqual(self._mirror(invoice), mirror, "the same mirror")
+        self.assertEqual(mirror.state, "posted", "not reset")
+        self.assertEqual(self._compare(invoice), [])
+
+    def test_rewrite(self):
+        entry = self._entry(post=True)
+        mirror = self._mirror(entry)
+        name = mirror.name
+        self._sql("UPDATE account_move_line SET balance = balance * 2, debit = debit * 2, credit = credit * 2, "
+                  "amount_currency = amount_currency * 2 WHERE move_id = %s", (mirror.id,))
+        wizard = self._check(entry)
+        doc = wizard.doc_ids
+        self.assertEqual(doc.fix, "rewrite")
+        self.assertFalse(doc.selected, "a rewrite is an explicit choice")
+        self.assertFalse(wizard.selected_count)
+        doc.selected = True
+        wizard.action_fix()
+        self.assertEqual(doc.state, "fixed", doc.message)
+        self.assertEqual(self._mirror(entry), mirror, "rewritten in place")
+        self.assertEqual(mirror.name, name)
+        self.assertEqual(mirror.state, "posted")
+        self.assertEqual(self._compare(entry), [])
+
+    def test_mixed_differences_rewrite(self):
+        invoice = self._invoice(post=True)
+        mirror = self._mirror(invoice)
+        other = self.env["res.partner"].create({"name": "Wrong contact"})
+        self._sql("UPDATE account_move SET partner_id = %s, invoice_date = '2026-02-01' WHERE id = %s",
+                  (other.id, mirror.id))
+        self.assertEqual(self._classify(invoice), "rewrite")
+        wizard = self._check(invoice)
+        wizard.doc_ids.selected = True
+        wizard.action_fix()
+        self.assertEqual(wizard.doc_ids.state, "fixed", wizard.doc_ids.message)
+        self.assertEqual(self._compare(invoice), [])
+
+    def test_missing_mirror_created(self):
+        main_only = self.env["account.analytic.account"].sudo().create({
+            "name": "Main only", "code": "MO2", "plan_id": self.analytic.plan_id.id,
+            "company_id": self.company.id})
+        bill = self._invoice(move_type="in_invoice")
+        bill.invoice_line_ids.analytic_distribution = {str(main_only.id): 100}
+        bill.action_post()
+        wizard = self._check(bill)
+        doc = wizard.doc_ids
+        self.assertEqual(doc.fix, "rewrite")
+        doc.selected = True
+        wizard.action_fix()
+        self.assertEqual(doc.state, "error", "the cause is still there")
+        self.assertIn("Main only", doc.message)
+
+        self.env["account.analytic.account"].sudo().create({
+            "name": "Main only", "code": "MO2", "plan_id": self.analytic.plan_id.id,
+            "company_id": self.official.id})
+        doc.selected = True
+        wizard.action_fix()
+        self.assertEqual(doc.state, "fixed", doc.message)
+        self.assertTrue(self._mirror(bill))
+        self.assertEqual(self._compare(bill), [])
+
+    def test_status_light(self):
+        invoice = self._invoice(post=True)
+        mirror = self._mirror(invoice)
+        mirror.with_company(self.official).sudo().button_draft()
+        self.assertEqual(self._classify(invoice), "light")
+        wizard = self._check(invoice)
+        wizard.action_fix()
+        self.assertEqual(mirror.state, "posted")
+        self.assertEqual(self._compare(invoice), [])
+
+    def test_locked_cannot_fix(self):
+        invoice = self._invoice(post=True)
+        mirror = self._mirror(invoice)
+        self._sql("UPDATE account_move SET ref = 'X' WHERE id = %s", (mirror.id,))
+        self.official.sudo().fiscalyear_lock_date = "2026-12-31"
+        wizard = self._check(invoice)
+        doc = wizard.doc_ids
+        self.assertEqual(doc.fix, "cannot")
+        self.assertIn("locked", doc.reason)
+        self.assertFalse(doc.selected)
+        self.assertFalse(wizard.selected_count)

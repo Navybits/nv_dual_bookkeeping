@@ -1,6 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
+    <!-- A document row opened: its differences -->
+    <record id="view_nv_mirror_check_wizard_doc_form" model="ir.ui.view">
+        <field name="name">nv.mirror.check.wizard.doc.form</field>
+        <field name="model">nv.mirror.check.wizard.doc</field>
+        <field name="arch" type="xml">
+            <form string="Differences">
+                <group>
+                    <group>
+                        <field name="source_move_id"/>
+                        <field name="mirror_move_id"/>
+                    </group>
+                    <group>
+                        <field name="fix"/>
+                        <field name="reason" invisible="not reason"/>
+                        <field name="state"/>
+                        <field name="message" invisible="not message"/>
+                    </group>
+                </group>
+                <field name="line_ids" nolabel="1">
+                    <list>
+                        <field name="group"/>
+                        <field name="label"/>
+                        <field name="source_value"/>
+                        <field name="mirror_value"/>
+                    </list>
+                </field>
+            </form>
+        </field>
+    </record>
+
     <record id="view_nv_mirror_check_wizard_form" model="ir.ui.view">
         <field name="name">nv.mirror.check.wizard.form</field>
         <field name="model">nv.mirror.check.wizard</field>
@@ -9,7 +39,7 @@
                 <div class="alert alert-info" role="alert" invisible="checked">
                     Compares each document with its mirror in the Official Books
                     company: header, lines, totals per account, payment and
-                    reconciliations. Read-only: nothing is changed.
+                    reconciliations. Nothing is changed until you click Fix.
                 </div>
                 <field name="checked" invisible="1"/>
                 <group>
@@ -24,22 +54,40 @@
                     <field name="checked_count"/>
                     <field name="document_count"/>
                 </group>
-                <div class="alert alert-success" role="status" invisible="not checked or line_ids">
+                <div class="alert alert-success" role="status" invisible="not checked or doc_ids">
                     No differences: every mirror matches its document.
                 </div>
-                <field name="line_ids" nolabel="1" invisible="not checked or not line_ids">
-                    <list>
+                <div class="text-muted mb-2" invisible="not checked or not doc_ids">
+                    <strong>Light</strong>: fixed in place, the mirror stays posted.
+                    <strong>Rewrite</strong>: the mirror is reset, rebuilt from the
+                    document (same number) and posted again; its reconciliations are
+                    redone. Rewrites are not ticked by default. The document itself
+                    is never changed. Open a row to see its differences.
+                </div>
+                <field name="doc_ids" nolabel="1" invisible="not checked or not doc_ids">
+                    <list create="0" delete="0"
+                          decoration-success="state == 'fixed'"
+                          decoration-danger="state == 'error'"
+                          decoration-muted="fix == 'cannot'">
+                        <field name="selected" widget="boolean_toggle"
+                               readonly="fix == 'cannot' or state == 'fixed'"/>
                         <field name="source_move_id"/>
                         <field name="mirror_move_id"/>
-                        <field name="group"/>
-                        <field name="label"/>
-                        <field name="source_value"/>
-                        <field name="mirror_value"/>
+                        <field name="difference_count"/>
+                        <field name="fix"/>
+                        <field name="reason" optional="show"/>
+                        <field name="state"/>
+                        <field name="message" optional="show"/>
                     </list>
                 </field>
+                <field name="selected_count" invisible="1"/>
                 <footer>
                     <button name="action_check" type="object" string="Compare"
                             class="btn-primary" invisible="checked"/>
+                    <button name="action_fix" type="object" string="Fix Ticked Documents"
+                            class="btn-primary" invisible="not selected_count"
+                            groups="nv_dual_bookkeeping.group_sync_manager"
+                            confirm="Fix the ticked mirrors? Light fixes change them in place; rewritten mirrors are reset, rebuilt from their document and posted again."/>
                     <button name="action_check" type="object" string="Compare Again"
                             class="btn-secondary" invisible="not checked"/>
                     <button string="Close" class="btn-secondary" special="cancel"/>
