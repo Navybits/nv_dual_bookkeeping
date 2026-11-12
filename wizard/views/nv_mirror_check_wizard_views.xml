@@ -86,7 +86,7 @@
                             class="btn-primary" invisible="checked"/>
                     <button name="action_fix" type="object" string="Fix Ticked Documents"
                             class="btn-primary" invisible="not selected_count"
-                            groups="nv_dual_bookkeeping.group_sync_manager"
+                            groups="nv_dual_bookkeeping.group_mirror_repair"
                             confirm="Fix the ticked mirrors? Light fixes change them in place; rewritten mirrors are reset, rebuilt from their document and posted again."/>
                     <button name="action_check" type="object" string="Compare Again"
                             class="btn-secondary" invisible="not checked"/>
@@ -112,7 +112,7 @@
         <field name="target">new</field>
         <field name="binding_model_id" ref="account.model_account_move"/>
         <field name="binding_view_types">list,form</field>
-        <field name="group_ids" eval="[Command.set([ref('account.group_account_manager')])]"/>
+        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_mirror_repair')])]"/>
     </record>
 
     <record id="action_nv_mirror_check_wizard_payments" model="ir.actions.act_window">
@@ -122,7 +122,7 @@
         <field name="target">new</field>
         <field name="binding_model_id" ref="account.model_account_payment"/>
         <field name="binding_view_types">list,form</field>
-        <field name="group_ids" eval="[Command.set([ref('account.group_account_manager')])]"/>
+        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_mirror_repair')])]"/>
     </record>
 
 </odoo>

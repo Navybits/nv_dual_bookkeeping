@@ -20,7 +20,7 @@ class TestMirrorCheck(DualBookkeepingCommon):
         cls.analytic = cls.env["account.analytic.account"].sudo().create(
             {"name": "Shared project", "plan_id": plan.id, "company_id": False})
         cls.env.user.sudo().write({"group_ids": [Command.link(
-            cls.env.ref("nv_dual_bookkeeping.group_sync_manager").id)]})
+            cls.env.ref("nv_dual_bookkeeping.group_mirror_repair").id)]})
         cls.term = cls.env["account.payment.term"].sudo().create({
             "name": "45 days",
             "line_ids": [Command.create({"value": "percent", "value_amount": 100.0, "nb_days": 45})],
@@ -320,3 +320,25 @@ class TestMirrorCheck(DualBookkeepingCommon):
         self.assertIn("locked", doc.reason)
         self.assertFalse(doc.selected)
         self.assertFalse(wizard.selected_count)
+
+    # ------------------------------------------------------------------
+    # Rights: the repair tools belong to the Mirror Repair group only
+    # ------------------------------------------------------------------
+
+    def test_repair_tools_need_the_repair_group(self):
+        from odoo.exceptions import AccessError
+        from odoo.tests import new_test_user
+
+        both = [Command.set((self.company + self.official).ids)]
+        manager = new_test_user(
+            self.env, login="nv_db_acc_manager", groups="base.group_user,account.group_account_manager",
+            company_id=self.company.id, company_ids=both)
+        repairer = new_test_user(
+            self.env, login="nv_db_repairer", groups="base.group_user,nv_dual_bookkeeping.group_mirror_repair",
+            company_id=self.company.id, company_ids=both)
+        for model in ("nv.mirror.check.wizard", "nv.mirror.partner.fix.wizard"):
+            for user in (manager, self.sync_manager):
+                with self.assertRaises(AccessError, msg=f"{model} / {user.login}"):
+                    self.env[model].with_user(user).create({})
+            self.assertTrue(self.env[model].with_user(repairer).create({}))
+        self.assertTrue(repairer.has_group("account.group_account_manager"), "implies accounting manager")

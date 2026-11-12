@@ -61,4 +61,22 @@
         </field>
     </record>
 
+    <!--
+        Group: Dual Bookkeeping Mirror Repair
+        Inherits account manager rights. Members use the repair tools: Compare
+        with Mirror (compare and fix) and Fix Mirror Partners. Separate from
+        Sync Manager: these tools change posted mirrors in the Official Books
+        company, so they are given only to the people doing the repairs.
+    -->
+    <record id="group_mirror_repair" model="res.groups">
+        <field name="name">Dual Bookkeeping Mirror Repair</field>
+        <field name="privilege_id" ref="privilege_nv_dual_bookkeeping"/>
+        <field name="implied_ids" eval="[(4, ref('account.group_account_manager'))]"/>
+        <field name="comment">
+            Users in this group can compare documents with their mirror in the
+            Official Books company and repair the mirrors (Compare with Mirror,
+            Fix Mirror Partners). Nobody has it by default.
+        </field>
+    </record>
+
 </odoo>

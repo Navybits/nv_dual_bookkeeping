@@ -115,11 +115,11 @@ class NvMirrorCheckWizard(models.TransientModel):
 
     def action_fix(self):
         """Fix the ticked documents (each in its own savepoint), then compare
-        them again: a document still different is reported. Sync managers
-        only (the mirrors are changed, and rewritten ones reset)."""
+        them again: a document still different is reported. Mirror Repair
+        group only (the mirrors are changed, and rewritten ones reset)."""
         self.ensure_one()
-        if not self.env.user.has_group('nv_dual_bookkeeping.group_sync_manager'):
-            raise UserError(_("Only Dual Bookkeeping Sync Managers can fix mirrors."))
+        if not self.env.user.has_group('nv_dual_bookkeeping.group_mirror_repair'):
+            raise UserError(_("Only members of Dual Bookkeeping Mirror Repair can fix mirrors."))
         engine = self.env['nv.sync.engine']
         docs = self.doc_ids.filtered(
             lambda d: d.selected and d.state != 'fixed' and d.fix in ('light', 'rewrite'))
