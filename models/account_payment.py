@@ -94,13 +94,73 @@ class AccountPayment(models.Model):
     @api.onchange('partner_id')
     def _onchange_partner_id_dual_bookkeeping(self):
         """Sync is_official from the partner whenever partner changes on a
-        draft payment in a non-official-books company."""
+        draft payment in a non-official-books company.
+
+        Once the payment has a number (reset to draft), a customer of the other
+        type (P1 <-> P2) is refused: it would keep a number of the wrong stream."""
         if (
             self.partner_id
             and self.state == 'draft'
             and not self.company_id.is_official_company
         ):
+            move = self._origin.move_id
+            if (
+                move and move._nv_has_number()
+                and self.partner_id.is_official != self._origin.is_official
+            ):
+                raise UserError(_(
+                    "Payment '%s' already has a number: the customer can only be changed "
+                    "to one of the same Official/Non-Official type (P1 <-> P2 not allowed)."
+                ) % move.name)
             self.is_official = self.partner_id.is_official
+
+    @api.onchange('is_official')
+    def _onchange_is_official_dual_bookkeeping(self):
+        """Form only (driver payments / register-payment wizard create in code
+        and are not affected): the Official toggle must match the customer."""
+        if (
+            self.partner_id
+            and not self.company_id.is_official_company
+            and self.is_official != self.partner_id.is_official
+        ):
+            raise UserError(
+                self.env['account.move']._nv_partner_mismatch_message(self.partner_id))
+
+    def _nv_check_locked_after_number(self, vals):
+        """User edits of existing payments in an operating company: same rules
+        as account.move (flag must match the customer; once numbered no O/NO
+        switch and no customer of the other type). Not checked: Official Books
+        companies, superuser (sync engine), create() (drivers, wizards)."""
+        if self.env.su or not ({'is_official', 'partner_id'} & set(vals)):
+            return
+        new_partner = None
+        if vals.get('partner_id'):
+            new_partner = self.env['res.partner'].browse(vals['partner_id'])
+        for payment in self:
+            if payment.company_id.is_official_company:
+                continue
+            move = payment.move_id
+            numbered = bool(move) and move._nv_has_number()
+            if numbered and 'is_official' in vals and bool(vals['is_official']) != payment.is_official:
+                raise UserError(_(
+                    "Payment '%s' already has a number: its Official/Non-Official "
+                    "status cannot be changed."
+                ) % move.name)
+            if (
+                numbered and new_partner and new_partner != payment.partner_id
+                and new_partner.is_official != payment.is_official
+            ):
+                raise UserError(_(
+                    "Payment '%s' already has a number: the customer can only be changed "
+                    "to one of the same Official/Non-Official type (P1 <-> P2 not allowed)."
+                ) % move.name)
+            if 'is_official' in vals:
+                partner = new_partner if 'partner_id' in vals else payment.partner_id
+                changed = (bool(vals['is_official']) != payment.is_official
+                           or partner != payment.partner_id)
+                if changed and partner and bool(vals['is_official']) != partner.is_official:
+                    raise UserError(
+                        self.env['account.move']._nv_partner_mismatch_message(partner))
 
     # -------------------------------------------------------------------------
     # Create override — set is_official from partner for payments created
@@ -130,14 +190,10 @@ class AccountPayment(models.Model):
         Prevent changing is_official after the payment is posted, and restrict
         setting is_official=False to privileged users only.
         """
+        # Replaces the former state == 'posted' check, which never matched
+        # (Odoo 19 payments are in_process / paid, never posted).
+        self._nv_check_locked_after_number(vals)
         if 'is_official' in vals:
-            for payment in self:
-                if payment.state == 'posted':
-                    raise UserError(_(
-                        "Cannot change the Official/Non-Official status of payment '%s' "
-                        "after it has been posted."
-                    ) % payment.name)
-
             # Mark as explicitly set so require_official_flag validation passes
             vals['is_official_set'] = True
 

@@ -158,13 +158,90 @@ class AccountMove(models.Model):
     @api.onchange('partner_id')
     def _onchange_partner_id_dual_bookkeeping(self):
         """Sync is_official from the partner whenever partner changes on a draft
-        document in a non-official-books company."""
+        document in a non-official-books company.
+
+        Once the entry has a number (reset to draft), a partner of the other
+        Official/Non-Official type is refused: the entry would keep a number of
+        the wrong stream (sequence gap)."""
         if (
             self.partner_id
             and self.state == 'draft'
             and not self.company_id.is_official_company
         ):
+            if (
+                self._origin.id
+                and self._origin._nv_has_number()
+                and self.partner_id.is_official != self._origin.is_official
+            ):
+                raise UserError(_(
+                    "'%s' already has a number: the partner can only be changed to "
+                    "one of the same Official/Non-Official type."
+                ) % self._origin.name)
             self.is_official = self.partner_id.is_official
+
+    @api.onchange('is_official')
+    def _onchange_is_official_dual_bookkeeping(self):
+        """Form only (drivers / wizards creating in code are not affected): the
+        Official toggle must match the partner's type."""
+        if (
+            self.partner_id
+            and not self.company_id.is_official_company
+            and self.is_official != self.partner_id.is_official
+        ):
+            raise UserError(self._nv_partner_mismatch_message(self.partner_id))
+
+    # -------------------------------------------------------------------------
+    # Locked once numbered (avoid sequence gaps / mixed O-NO numbers)
+    # -------------------------------------------------------------------------
+
+    def _nv_has_number(self):
+        """True once the entry got a number from its sequence (Odoo keeps it on
+        reset to draft and repost)."""
+        self.ensure_one()
+        return bool(self.posted_before and self.name and self.name != '/')
+
+    @api.model
+    def _nv_partner_mismatch_message(self, partner):
+        if partner.is_official:
+            return _("%s is an Official customer/vendor: the document must be Official.") % partner.display_name
+        return _("%s is a Non-Official customer/vendor: the document cannot be Official.") % partner.display_name
+
+    def _nv_check_locked_after_number(self, vals):
+        """User edits of existing entries in an operating company:
+        - the Official flag must match the partner's type;
+        - once numbered: no O/NO switch, no partner of the other type, no rename.
+        Not checked: Official Books companies (manual entries are their
+        responsibility), system code running as superuser (sync engine, flag
+        pushed from the payment), and create() (drivers, wizards)."""
+        if self.env.su or not ({'is_official', 'partner_id', 'name'} & set(vals)):
+            return
+        new_partner = None
+        if vals.get('partner_id'):
+            new_partner = self.env['res.partner'].browse(vals['partner_id'])
+        for move in self:
+            if move.company_id.is_official_company:
+                continue
+            numbered = move._nv_has_number()
+            if numbered and 'name' in vals and vals['name'] != move.name:
+                raise UserError(_("'%s' already has a number: it cannot be renamed.") % move.name)
+            if numbered and 'is_official' in vals and bool(vals['is_official']) != move.is_official:
+                raise UserError(_(
+                    "'%s' already has a number: its Official/Non-Official status cannot be changed."
+                ) % move.name)
+            if (
+                numbered and new_partner and new_partner != move.partner_id
+                and new_partner.is_official != move.is_official
+            ):
+                raise UserError(_(
+                    "'%s' already has a number: the partner can only be changed to "
+                    "one of the same Official/Non-Official type."
+                ) % move.name)
+            if 'is_official' in vals:
+                partner = new_partner if 'partner_id' in vals else move.partner_id
+                changed = (bool(vals['is_official']) != move.is_official
+                           or partner != move.partner_id)
+                if changed and partner and bool(vals['is_official']) != partner.is_official:
+                    raise UserError(self._nv_partner_mismatch_message(partner))
 
     # -------------------------------------------------------------------------
     # Sequence overrides (Odoo 19 native sequence.mixin)
@@ -182,6 +259,19 @@ class AccountMove(models.Model):
         if where_string and where_string != "WHERE FALSE":
             where_string += " AND is_official = %(nv_is_official)s"
             param['nv_is_official'] = self.is_official
+            # Only continue from numbers of this stream's own prefix (e.g.
+            # CSH11/2/...): one entry holding a number of the other stream can
+            # no longer drag every following entry into that stream.
+            base_prefix = (self.journal_id.seq_prefix_o if self.is_official
+                           else self.journal_id.seq_prefix_no)
+            if base_prefix:
+                prefix = base_prefix
+                if self.move_type in ('out_refund', 'in_refund'):
+                    prefix = 'R%s' % prefix  # same as _get_starting_sequence()
+                where_string += " AND sequence_prefix LIKE %(nv_seq_prefix)s"
+                param['nv_seq_prefix'] = (
+                    prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '/%'
+                )
         return where_string, param
 
     def _get_last_sequence(self, relaxed=False, with_prefix=None):
@@ -485,7 +575,10 @@ class AccountMove(models.Model):
         1. Cannot be changed once a move is posted.
         2. Cannot be set to False in the Official Books company.
         3. Can only be set to False by users with the appropriate group.
+        4. Must match the partner's type; once numbered no O/NO switch, no
+           partner of the other type, no rename (_nv_check_locked_after_number).
         """
+        self._nv_check_locked_after_number(vals)
         if 'is_official' in vals:
             for move in self:
                 # Rule 1: locked after posting
