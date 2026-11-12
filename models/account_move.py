@@ -26,10 +26,12 @@ class AccountMove(models.Model):
 
     is_official_set = fields.Boolean(
         string='Official Flag Explicitly Set',
-        default=True,
+        default=lambda self: bool(self.env.context.get('default_partner_id')),
         copy=False,
-        help="Tracks whether the user explicitly chose Official or Non-Official "
-             "before posting. Used when require_official_flag setting is enabled.",
+        help="Set when the flag was chosen: the user clicked the toggle, it came "
+             "from the contact, or the document was created in code or copied "
+             "(credit note, duplicate, payment, mirror). Checked at posting when "
+             "'Require explicit Official/Non-Official selection' is on.",
     )
 
     dual_sequence_label = fields.Char(
@@ -53,6 +55,24 @@ class AccountMove(models.Model):
         copy=False,
         help="Stores the sequence number of the original transaction in the main company "
              "(e.g. 'BLOM-O/2026/0001'). Set on mirror entries by the sync engine.",
+    )
+
+    nv_mirror_move_id = fields.Many2one(
+        comodel_name='account.move',
+        string='Mirror in Official Books',
+        readonly=True,
+        copy=False,
+        index='btree_not_null',
+        help="Set on a source transaction by the sync engine: its mirror in the "
+             "Official Books company (D2).",
+    )
+
+    nv_mirror_outdated = fields.Boolean(
+        string='Mirror Outdated',
+        readonly=True,
+        copy=False,
+        help="Set when the source was reset to draft after it was mirrored: its "
+             "mirror is rewritten when the source is synced again (D2).",
     )
 
     sync_log_ids = fields.One2many(
@@ -129,8 +149,10 @@ class AccountMove(models.Model):
     @api.depends('sync_log_ids', 'sync_log_ids.sync_state', 'sync_log_ids.sync_date')
     def _compute_sync_state(self):
         for move in self:
-            logs = move.sync_log_ids.sorted('sync_date', reverse=True)
-            move.sync_state = logs[0].sync_state if logs else False
+            # sync_date has no sub-second precision: the id orders the logs
+            # written in the same second (an error, then its retry)
+            logs = move.sync_log_ids.sorted(lambda log: (log.sync_date, log.id))
+            move.sync_state = logs[-1].sync_state if logs else False
 
     @api.depends('company_id', 'company_id.is_official_company')
     @api.depends_context('uid')
@@ -158,7 +180,8 @@ class AccountMove(models.Model):
     @api.onchange('partner_id')
     def _onchange_partner_id_dual_bookkeeping(self):
         """Sync is_official from the partner whenever partner changes on a draft
-        document in a non-official-books company.
+        document in a non-official-books company; a flag from an O/NO partner
+        counts as set (D7).
 
         Once the entry has a number (reset to draft), a partner of the other
         Official/Non-Official type is refused: the entry would keep a number of
@@ -178,17 +201,30 @@ class AccountMove(models.Model):
                     "one of the same Official/Non-Official type."
                 ) % self._origin.name)
             self.is_official = self.partner_id.is_official
+            self.is_official_set = True
 
     @api.onchange('is_official')
     def _onchange_is_official_dual_bookkeeping(self):
-        """Form only (drivers / wizards creating in code are not affected): the
-        Official toggle must match the partner's type."""
+        """Form only (code creating entries - drivers, SO/PO invoicing, sync -
+        is not affected): the Official toggle must match the partner's type."""
         if (
             self.partner_id
             and not self.company_id.is_official_company
             and self.is_official != self.partner_id.is_official
         ):
             raise UserError(self._nv_partner_mismatch_message(self.partner_id))
+
+    def onchange(self, values, field_names, fields_spec):
+        """EXTENDS account: a user click on the toggle marks the flag as set (D7).
+
+        An @api.onchange on is_official cannot tell a click from a default:
+        Odoo runs every onchange method on the first call of a new form
+        (web/models/models.py, onchange). The first call has no field_names.
+        """
+        result = super().onchange(values, field_names, fields_spec)
+        if field_names and 'is_official' in field_names and 'is_official_set' in fields_spec:
+            result.setdefault('value', {})['is_official_set'] = True
+        return result
 
     # -------------------------------------------------------------------------
     # Locked once numbered (avoid sequence gaps / mixed O-NO numbers)
@@ -206,31 +242,25 @@ class AccountMove(models.Model):
             return _("%s is an Official customer/vendor: the document must be Official.") % partner.display_name
         return _("%s is a Non-Official customer/vendor: the document cannot be Official.") % partner.display_name
 
-    def web_save(self, vals, specification, next_id=None):
-        """Form save only (code creating entries - drivers, SO/PO invoicing,
-        sync engine - calls create()/write() directly, never web_save): a NEW
-        entry's Official flag must match its partner, whatever the order the
-        form was filled in. Existing entries are checked in write()."""
-        if not self and vals.get('partner_id') and 'is_official' in vals:
-            company = (self.env['res.company'].browse(vals['company_id'])
-                       if vals.get('company_id') else self.env.company)
-            partner = self.env['res.partner'].browse(vals['partner_id'])
-            if (
-                not self.env.su
-                and not company.is_official_company
-                and bool(vals['is_official']) != partner.is_official
-            ):
-                raise UserError(self._nv_partner_mismatch_message(partner))
-        return super().web_save(vals, specification, next_id=next_id)
+    @api.model
+    def _nv_skip_dual_checks(self):
+        """System code (superuser: sync engine, flag pushed from the payment)
+        and the Change to Non-Official wizard (accounting managers only) are
+        not subject to the user-edit checks."""
+        return self.env.su or (
+            self.env.context.get('nv_official_change')
+            and self.env.user.has_group('account.group_account_manager')
+        )
 
     def _nv_check_locked_after_number(self, vals):
         """User edits of existing entries in an operating company:
-        - the Official flag must match the partner's type;
-        - once numbered: no O/NO switch, no partner of the other type, no rename.
+        - the Official flag must match the partner's type when it changes;
+        - once numbered: no partner of the other type, no rename (the O/NO
+          switch itself is Rule 1b in write(), for everyone).
         Not checked: Official Books companies (manual entries are their
-        responsibility), system code running as superuser (sync engine, flag
-        pushed from the payment), and create() (drivers, wizards)."""
-        if self.env.su or not ({'is_official', 'partner_id', 'name'} & set(vals)):
+        responsibility, mirrors are renamed by the sync), _nv_skip_dual_checks,
+        and create() (drivers, wizards)."""
+        if not ({'is_official', 'partner_id', 'name'} & set(vals)) or self._nv_skip_dual_checks():
             return
         new_partner = None
         if vals.get('partner_id'):
@@ -242,9 +272,7 @@ class AccountMove(models.Model):
             if numbered and 'name' in vals and vals['name'] != move.name:
                 raise UserError(_("'%s' already has a number: it cannot be renamed.") % move.name)
             if numbered and 'is_official' in vals and bool(vals['is_official']) != move.is_official:
-                raise UserError(_(
-                    "'%s' already has a number: its Official/Non-Official status cannot be changed."
-                ) % move.name)
+                continue  # Rule 1b in write() gives the error
             if (
                 numbered and new_partner and new_partner != move.partner_id
                 and new_partner.is_official != move.is_official
@@ -259,6 +287,23 @@ class AccountMove(models.Model):
                            or partner != move.partner_id)
                 if changed and partner and bool(vals['is_official']) != partner.is_official:
                     raise UserError(self._nv_partner_mismatch_message(partner))
+
+    def web_save(self, vals, specification, next_id=None):
+        """Form save only (code creating entries - drivers, SO/PO invoicing,
+        sync engine - calls create()/write() directly, never web_save): a NEW
+        entry's Official flag must match its partner, whatever the order the
+        form was filled in. Existing entries are checked in write()."""
+        if not self and vals.get('partner_id') and 'is_official' in vals:
+            company = (self.env['res.company'].browse(vals['company_id'])
+                       if vals.get('company_id') else self.env.company)
+            partner = self.env['res.partner'].browse(vals['partner_id'])
+            if (
+                not self._nv_skip_dual_checks()
+                and not company.is_official_company
+                and bool(vals['is_official']) != partner.is_official
+            ):
+                raise UserError(self._nv_partner_mismatch_message(partner))
+        return super().web_save(vals, specification, next_id=next_id)
 
     # -------------------------------------------------------------------------
     # Sequence overrides (Odoo 19 native sequence.mixin)
@@ -571,6 +616,11 @@ class AccountMove(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        """D7: only the web form sends is_official_set (a field of the form,
+        False until the user clicks the toggle or picks a partner); entries
+        created in code by Odoo or other modules, and copies, count as set, so
+        they are never blocked by "Require explicit Official/Non-Official
+        selection"."""
         for vals in vals_list:
             # Only auto-set when not already supplied and not in Official Books company.
             # This covers programmatic creation (SO/PO invoice, batch billing, etc.)
@@ -580,6 +630,7 @@ class AccountMove(models.Model):
                 if partner_id:
                     partner = self.env['res.partner'].browse(partner_id)
                     vals['is_official'] = partner.is_official
+            vals.setdefault('is_official_set', True)
         return super().create(vals_list)
 
     # -------------------------------------------------------------------------
@@ -592,8 +643,8 @@ class AccountMove(models.Model):
         1. Cannot be changed once a move is posted.
         2. Cannot be set to False in the Official Books company.
         3. Can only be set to False by users with the appropriate group.
-        4. Must match the partner's type; once numbered no O/NO switch, no
-           partner of the other type, no rename (_nv_check_locked_after_number).
+        4. Must match the partner's type; once numbered no partner of the
+           other type, no rename (_nv_check_locked_after_number).
         """
         self._nv_check_locked_after_number(vals)
         if 'is_official' in vals:
@@ -604,6 +655,24 @@ class AccountMove(models.Model):
                         "Cannot change the Official/Non-Official status of '%s' "
                         "after it has been posted."
                     ) % move.name)
+
+                # Rule 1b: a draft that was posted before keeps its number on
+                # repost, so switching stream would leave e.g. an Official number
+                # on a Non-Official entry. Clearing the name in the same write
+                # (as the Change to Non-Official wizard does) is allowed.
+                if (
+                    bool(vals['is_official']) != move.is_official
+                    and move.posted_before
+                    and move.name and move.name != '/'
+                    and vals.get('name', move.name) not in (False, '/')
+                ):
+                    raise UserError(_(
+                        "'%(name)s' already holds a number from the %(stream)s sequence, "
+                        "so its Official/Non-Official status cannot be switched. Use the "
+                        "'Change to Non-Official' button on the posted entry instead.",
+                        name=move.name,
+                        stream=_('Official') if move.is_official else _('Non-Official'),
+                    ))
 
                 # Rule 2: Official Books company — all transactions must stay Official
                 if vals['is_official'] is False and move.company_id.is_official_company:
@@ -628,7 +697,13 @@ class AccountMove(models.Model):
                         "Please contact your accounting manager."
                     ))
 
-        return super().write(vals)
+        result = super().write(vals)
+        if {'invoice_date_due', 'line_ids', 'invoice_line_ids'} & set(vals):
+            # editable on a posted document: nothing is reposted, so the
+            # mirror is updated here
+            self.env['nv.sync.engine'].sync_posted_edits(
+                self.filtered(lambda m: m.state == 'posted' and not m.is_mirror))
+        return result
 
     # -------------------------------------------------------------------------
     # action_post override
@@ -636,12 +711,10 @@ class AccountMove(models.Model):
 
     def action_post(self):
         """
-        Pre-posting validations and post-posting sync trigger.
+        Pre-posting validations; the sync itself is triggered from _post().
 
         1. Require explicit O/NO selection when setting is enabled.
         2. Block direct posting in official company when setting is enabled.
-        3. Call super() to perform the actual posting.
-        4. Trigger sync engine (non-blocking — never prevents posting).
         """
         ICP = self.env['ir.config_parameter'].sudo()
 
@@ -654,8 +727,8 @@ class AccountMove(models.Model):
             ).strip().lower() in ('true', '1')
             if require_flag and not move.is_official_set and not move.company_id.is_official_company:
                 raise UserError(_(
-                    "Please explicitly set Official or Non-Official on '%s' before posting. "
-                    "You can do this using the O/NO toggle on the transaction form."
+                    "Please explicitly set Official or Non-Official on '%s' before posting, "
+                    "with the O/NO toggle of the form."
                 ) % (move.name or move.ref or _('this transaction')))
 
             # Validation 2: block direct posting in official company
@@ -697,8 +770,73 @@ class AccountMove(models.Model):
         return posted
 
     # -------------------------------------------------------------------------
+    # Life-cycle of the mirror (D2)
+    # -------------------------------------------------------------------------
+
+    def _nv_mirrored(self):
+        """The sources in self that have a mirror (sudo: the link points to
+        the official company)."""
+        return self.filtered(lambda move: move.sudo().nv_mirror_move_id)
+
+    def button_draft(self):
+        """EXTENDS account: reset to draft resets the mirror (D2), refused
+        first when the mirror's period is locked in the Official Books.
+        Also reached by account.payment.action_draft."""
+        sources = self._nv_mirrored()
+        engine = self.env['nv.sync.engine']
+        engine.check_mirror_locks(sources, _("reset to draft"))
+        result = super().button_draft()
+        engine.reset_mirrors(sources)
+        return result
+
+    def button_cancel(self):
+        """EXTENDS account: cancelling cancels the mirror (D2); Odoo resets a
+        posted entry to draft first (button_draft above). Also reached by
+        account.payment.action_cancel."""
+        sources = self._nv_mirrored()
+        engine = self.env['nv.sync.engine']
+        engine.check_mirror_locks(sources, _("cancelled"))
+        result = super().button_cancel()
+        engine.cancel_mirrors(sources)
+        return result
+
+    def unlink(self):
+        """EXTENDS account: deleting a draft source deletes its draft mirror
+        (D2); refused while the mirror is posted."""
+        sources = self._nv_mirrored().filtered(lambda move: move.state != 'posted')
+        engine = self.env['nv.sync.engine']
+        engine.check_mirrors_deletable(sources)
+        deleted = [
+            (source.name, source.company_id, source.sudo().nv_mirror_move_id)
+            for source in sources
+        ]
+        result = super().unlink()
+        engine.delete_mirrors(deleted)
+        return result
+
+    # -------------------------------------------------------------------------
     # Manual sync action
     # -------------------------------------------------------------------------
+
+    def action_change_to_non_official(self):
+        """Open the Change to Non-Official wizard on a posted Official entry."""
+        self.ensure_one()
+        self.env['nv.official.change.wizard']._check_move(self)
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Change to Non-Official'),
+            'res_model': 'nv.official.change.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_move_id': self.id},
+        }
+
+    def action_compare_with_mirror(self):
+        """Compare with Mirror button: the differences between these
+        documents and their mirror (read-only)."""
+        wizard = self.env['nv.mirror.check.wizard'].with_context(
+            active_model='account.move', active_ids=self.ids).create({})
+        return wizard.action_check()
 
     def action_manual_sync(self):
         """

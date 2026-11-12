@@ -72,7 +72,7 @@ Go to **Settings → Users** and assign:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Default new transactions as Official | ✓ True | Pre-fills the O/NO toggle to Official on all new transactions |
-| Require explicit O/NO selection before posting | False | Forces the user to consciously set the flag before posting |
+| Require explicit O/NO selection before posting | False | A document whose flag was never set cannot be posted: the flag counts as set when the user clicks the toggle, when it comes from the contact, or when it is copied (Pay wizard, credit note, duplicate, mirror); documents created in code are never blocked |
 | Auto-post mirrored transactions | False | Posts mirrors automatically; **leave False** for review workflow |
 | Block direct posting in Official Company | False | Prevents any non-mirror entry being posted in the official company |
 
@@ -96,21 +96,53 @@ This means:
 
 When an Official transaction is posted in an operating company:
 
-1. Guard checks run (not a mirror, not already synced, official company configured).
-2. A mirror `account.move` is created in the official company via `sudo().with_company(official_co)`.
+1. Guard checks run (not a mirror, official company configured).
+2. A mirror `account.move` is created in the official company (sudo, official company);
+   the source keeps a link to it (**Mirror in Official Books**).
 3. Each account is matched by code in the official company's chart of accounts.
-4. The partner is matched by VAT, then name, then auto-created as a stub.
-5. A `nv.sync.log` record is written with `state='synced'`.
-6. If `auto_post_mirror=True`, the mirror is posted automatically.
+4. Each tax is matched by name and type (sale / purchase), then by amount when exactly
+   one tax of that type fits; a missing or ambiguous tax fails the sync with its name
+   (it is never dropped).
+5. The partner: a shared contact (no company) or one of the official company is used
+   as it is, so the mirror has exactly the source's contact. A contact of another
+   company is matched among the official company's and shared contacts by VAT and
+   name, then by name, else auto-created as a stub.
+6. A `nv.sync.log` record is written with `state='synced'` and its operation.
+7. If `auto_post_mirror=True`, the mirror is posted automatically.
+
+The mirror follows its source's life-cycle:
+
+| Source | Mirror | Log operation |
+|--------|--------|---------------|
+| Reset to draft | reset to draft, without its reconciliations (a draft mirror is kept) | Reset to Draft |
+| Posted again | the same mirror is rewritten (lines, amounts, rates, same number) and its reconciliations redone | Update |
+| Cancelled | cancelled | Cancel |
+| Deleted (draft) | deleted; refused while the mirror is posted | Delete |
+
+A reset, cancel or delete is refused, before anything changes, when the posted mirror's
+date is locked in the Official Books company.
 
 **Sync failures are non-blocking.** If the sync engine raises any exception:
 - The original posting is NOT rolled back.
 - An error log is written to `nv.sync.log`.
 - A sticky bus notification warns the user to check the Sync Dashboard.
 
+### Changing a posted Official entry to Non-Official
+
+**Change to Non-Official** button on posted Official invoices, entries and
+payments (accounting managers only). The entry must not be reconciled. The
+wizard asks for a reason, which is posted in the chatter.
+
+| Method | When | What it does |
+|--------|------|--------------|
+| Renumber | the entry holds the last Official number of its sequence (its journal and the official journal) | resets the entry (and its mirror), deletes the mirror, clears the entry's number and posts it with the next Non-Official number; the next Official entry reuses the freed number. The user must confirm the document was not sent or declared. |
+| Reverse | always | invoices / entries: posts an Official reversal (mirrored) and creates a Non-Official draft copy. Payments: cancels the payment and its mirror and creates a Non-Official draft copy. |
+
 ### Locking
 
 - `is_official` **cannot be changed** after a transaction is posted (enforced in `write()`).
+- It cannot be switched either on a draft that was posted before and still
+  holds its number: use **Change to Non-Official** instead.
 - Setting `is_official=False` requires the **Can Mark Transactions as Non-Official** group.
 
 ---
@@ -122,6 +154,8 @@ When an Official transaction is posted in an operating company:
 | Column | Description |
 |--------|-------------|
 | Sync Date | When the sync was attempted |
+| Source Number | Number of the source (kept when the source is deleted) |
+| Operation | Mirror / Update / Reset to Draft / Cancel / Delete |
 | Source Transaction | Original move in the operating company (clickable) |
 | Mirror Transaction | Created move in the official company (clickable) |
 | State | Synced (green) / Error (red) / Pending (orange) |
@@ -144,6 +178,8 @@ All menus live under **Accounting → Dual Bookkeeping**:
 | Non-Official Transactions | account.move list filtered to is_official=False |
 | Sync Dashboard | nv.sync.log list with retry actions |
 | Link Official Journals | Journal mapping wizard |
+| Compare with Mirror | Read-only check of documents against their mirror: header (number, dates, due date, payment term, reference, partner, journal, rates, status), each line (account by code, label, quantity, price, discount, taxes, partner, analytic, deferral dates, amounts), totals and balance per account, payment fields, payment status and reconciliations. Menu: the Official documents of a period; Action menu / form button: the selected documents. Shared records must be identical, company-specific ones match by code / name. One row per document with its suggested fix: **Light** (in place, the mirror stays posted: status, partners, analytic, due date without term, references, memo, missing reconciliations), **Rewrite** (the mirror is reset, rebuilt from the document with the same number and posted again; used as soon as one difference needs it; not ticked by default) or **Cannot fix** (locked period, secured entry, document not posted). *Fix Ticked Documents* repairs the ticked ones and compares them again; the document itself is never changed. Comparing: accounting managers; fixing: sync managers. |
+| Fix Mirror Partners | Gives existing mirrors exactly the contacts of their source (document, journal items, payment) without resetting anything to draft; reconciliations kept. *Find* lists the mirrors to fix, *Fix* applies. From the menu it checks all documents; from **Action → Fix Mirror Partners** on selected invoices / entries / payments, only those (e.g. to try it on one document first). Mirrors in a locked period or secured (hashed) are listed as *Cannot Fix*. Sync managers only. |
 | Summary Report | Pivot: journal × O/NO with amount_total measure |
 
 ---
@@ -159,6 +195,11 @@ The journal's `official_journal_id` is not set. Open the journal, go to the
 The chart of accounts in the official company is missing account `{code}`.
 Install the same chart of accounts in both companies, or manually create the
 missing account with the same code.
+
+### "Tax '{name}' (...) has no match / several matches in the Official Books company"
+The official company has no tax (or several) with the same name and type as the
+source's. Create or rename the tax there with the same name and type, then click
+**Retry** on the error record.
 
 ### Mirror not created / Sync Dashboard shows error
 1. Open the error record in the Sync Dashboard.
@@ -214,5 +255,39 @@ nv_dual_bookkeeping/
 │   └── nv_dual_bookkeeping_security.xml
 ├── data/
 │   └── nv_dual_bookkeeping_data.xml
+├── migrations/
+│   └── 19.0.1.0.2/post-mirror-links.py  # links existing mirrors to their source
+├── tests/                               # run with infra/test-module.sh ... 19
 └── README.md
 ```
+
+---
+
+## Changelog
+
+### Unreleased (PR #2 follow-ups)
+
+- **Mirror partner**: the mirror used to take the first contact with the same VAT
+  (any company, a child contact, a branch, a duplicate) instead of the source's own
+  shared contact. Fixed; existing mirrors are repaired with **Fix Mirror Partners**.
+- **Compare with Mirror**: lists the differences between documents and their mirror (read-only);
+  the tests run it after each sync scenario, so a field the sync stops copying fails them.
+
+### 19.0.1.0.2 (backport of the Odoo 20 rebuild decisions D2, D6, D7)
+
+- **D2 — the mirror follows its source**: reset to draft, re-post (the same mirror is
+  rewritten), cancel and delete are propagated to the mirror, refused when the
+  mirror's period is locked in the Official Books company, and logged with their
+  operation. The migration links the existing mirrors to their source (from their
+  sync log, else by number), so a re-post never creates a second mirror.
+- **D6 — a missing tax fails the sync**: taxes matched by name and type, then by
+  amount when unique; otherwise the sync fails with the tax's name (the mirror used
+  to be created without the tax). Retry once the tax exists.
+- **D7 — "Require explicit O/NO selection" works**: the flag of a new form is unset
+  until the user clicks the toggle or picks a contact; documents created in code,
+  copies and payments of the Pay wizard (each batch in its documents' stream) count
+  as set. Documents already in the database are not affected.
+- **The sync runs from `_post()`**: bulk "Confirm Entries", auto-post and reversals
+  posted with cancel=True are mirrored too.
+- **Change to Non-Official** wizard (renumber when last Official number, else
+  reverse); the O/NO flag cannot be switched on a reset entry that holds a number.

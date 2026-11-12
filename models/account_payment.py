@@ -20,10 +20,11 @@ class AccountPayment(models.Model):
 
     is_official_set = fields.Boolean(
         string='Official Flag Explicitly Set',
-        default=True,
+        default=lambda self: bool(self.env.context.get('default_partner_id')),
         copy=False,
-        help="Tracks whether the user explicitly set the Official/Non-Official flag "
-             "before posting.",
+        help="Set when the flag was chosen: the user clicked the toggle, it came "
+             "from the contact or from the paid documents, or the payment was "
+             "created in code.",
     )
 
     is_mirror = fields.Boolean(
@@ -94,7 +95,8 @@ class AccountPayment(models.Model):
     @api.onchange('partner_id')
     def _onchange_partner_id_dual_bookkeeping(self):
         """Sync is_official from the partner whenever partner changes on a
-        draft payment in a non-official-books company.
+        draft payment in a non-official-books company; a flag from an O/NO
+        partner counts as set (D7).
 
         Once the payment has a number (reset to draft), a customer of the other
         type (P1 <-> P2) is refused: it would keep a number of the wrong stream."""
@@ -113,11 +115,19 @@ class AccountPayment(models.Model):
                     "to one of the same Official/Non-Official type (P1 <-> P2 not allowed)."
                 ) % move.name)
             self.is_official = self.partner_id.is_official
+            self.is_official_set = True
 
     @api.onchange('is_official')
     def _onchange_is_official_dual_bookkeeping(self):
-        """Form only (driver payments / register-payment wizard create in code
-        and are not affected): the Official toggle must match the customer."""
+        """Declaring it makes the web client send a click on the O/NO toggle to
+        the server (it only does so for fields with an onchange; on
+        account.move a computed field depends on is_official, on
+        account.payment nothing did), so that onchange() below marks the flag
+        as set. Without it a payment without contact could never be posted
+        with "Require explicit Official/Non-Official selection".
+
+        Form only (driver payments / register-payment wizard create in code and
+        are not affected): the Official toggle must match the customer."""
         if (
             self.partner_id
             and not self.company_id.is_official_company
@@ -125,6 +135,40 @@ class AccountPayment(models.Model):
         ):
             raise UserError(
                 self.env['account.move']._nv_partner_mismatch_message(self.partner_id))
+
+    def onchange(self, values, field_names, fields_spec):
+        """EXTENDS web: a user click on the toggle marks the flag as set (D7);
+        see account.move.onchange."""
+        result = super().onchange(values, field_names, fields_spec)
+        if field_names and 'is_official' in field_names and 'is_official_set' in fields_spec:
+            result.setdefault('value', {})['is_official_set'] = True
+        return result
+
+    # -------------------------------------------------------------------------
+    # Create override — set is_official from partner for payments created
+    # directly in code (mirrors account.move's create() override). Without
+    # this, programmatic payment creation (e.g. nv_delivery_routes' driver
+    # cash reconciliation / cash-on-delivery payments) never fires the
+    # onchange above, silently defaults is_official to False, and the
+    # sync-to-official-company hook then never runs for them.
+    # -------------------------------------------------------------------------
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        # D7: only the web form sends is_official_set; payments created in
+        # code count as set.
+        for vals in vals_list:
+            if 'is_official' not in vals and not self.env.company.is_official_company:
+                partner_id = vals.get('partner_id')
+                if partner_id:
+                    partner = self.env['res.partner'].browse(partner_id)
+                    vals['is_official'] = partner.is_official
+            vals.setdefault('is_official_set', True)
+        return super().create(vals_list)
+
+    # -------------------------------------------------------------------------
+    # Locked once numbered (avoid sequence gaps / mixed O-NO numbers)
+    # -------------------------------------------------------------------------
 
     def web_save(self, vals, specification, next_id=None):
         """Form save only (driver payments, register-payment wizard and the
@@ -136,7 +180,7 @@ class AccountPayment(models.Model):
                        if vals.get('company_id') else self.env.company)
             partner = self.env['res.partner'].browse(vals['partner_id'])
             if (
-                not self.env.su
+                not self.env['account.move']._nv_skip_dual_checks()
                 and not company.is_official_company
                 and bool(vals['is_official']) != partner.is_official
             ):
@@ -146,10 +190,13 @@ class AccountPayment(models.Model):
 
     def _nv_check_locked_after_number(self, vals):
         """User edits of existing payments in an operating company: same rules
-        as account.move (flag must match the customer; once numbered no O/NO
-        switch and no customer of the other type). Not checked: Official Books
-        companies, superuser (sync engine), create() (drivers, wizards)."""
-        if self.env.su or not ({'is_official', 'partner_id'} & set(vals)):
+        as account.move (flag must match the customer when it changes; once
+        numbered no customer of the other type - the O/NO switch itself is
+        Rule 1b in write(), for everyone). Not checked: Official Books
+        companies, superuser (sync engine), the Change to Non-Official wizard,
+        create() (drivers, wizards)."""
+        if (not ({'is_official', 'partner_id'} & set(vals))
+                or self.env['account.move']._nv_skip_dual_checks()):
             return
         new_partner = None
         if vals.get('partner_id'):
@@ -160,10 +207,7 @@ class AccountPayment(models.Model):
             move = payment.move_id
             numbered = bool(move) and move._nv_has_number()
             if numbered and 'is_official' in vals and bool(vals['is_official']) != payment.is_official:
-                raise UserError(_(
-                    "Payment '%s' already has a number: its Official/Non-Official "
-                    "status cannot be changed."
-                ) % move.name)
+                continue  # Rule 1b in write() gives the error
             if (
                 numbered and new_partner and new_partner != payment.partner_id
                 and new_partner.is_official != payment.is_official
@@ -181,25 +225,6 @@ class AccountPayment(models.Model):
                         self.env['account.move']._nv_partner_mismatch_message(partner))
 
     # -------------------------------------------------------------------------
-    # Create override — set is_official from partner for payments created
-    # directly in code (mirrors account.move's create() override). Without
-    # this, programmatic payment creation (e.g. nv_delivery_routes' driver
-    # cash reconciliation / cash-on-delivery payments) never fires the
-    # onchange above, silently defaults is_official to False, and the
-    # sync-to-official-company hook then never runs for them.
-    # -------------------------------------------------------------------------
-
-    @api.model_create_multi
-    def create(self, vals_list):
-        for vals in vals_list:
-            if 'is_official' not in vals and not self.env.company.is_official_company:
-                partner_id = vals.get('partner_id')
-                if partner_id:
-                    partner = self.env['res.partner'].browse(partner_id)
-                    vals['is_official'] = partner.is_official
-        return super().create(vals_list)
-
-    # -------------------------------------------------------------------------
     # Write override — mirror account.move locking logic
     # -------------------------------------------------------------------------
 
@@ -208,10 +233,26 @@ class AccountPayment(models.Model):
         Prevent changing is_official after the payment is posted, and restrict
         setting is_official=False to privileged users only.
         """
-        # Replaces the former state == 'posted' check, which never matched
-        # (Odoo 19 payments are in_process / paid, never posted).
         self._nv_check_locked_after_number(vals)
         if 'is_official' in vals:
+            for payment in self:
+                # Same as account.move Rule 1b: a payment holding a number
+                # (posted, or reset to draft: it keeps its number on repost)
+                # cannot switch stream. Covers posted payments too: a
+                # state == 'posted' check never matched (Odoo 19 payments are
+                # in_process / paid).
+                move = payment.move_id
+                if (
+                    bool(vals['is_official']) != payment.is_official
+                    and move.posted_before
+                    and move.name and move.name != '/'
+                ):
+                    raise UserError(_(
+                        "Payment '%s' already holds a number from its sequence, so its "
+                        "Official/Non-Official status cannot be switched. Use the "
+                        "'Change to Non-Official' button on the posted payment instead."
+                    ) % move.name)
+
             # Mark as explicitly set so require_official_flag validation passes
             vals['is_official_set'] = True
 
@@ -226,7 +267,36 @@ class AccountPayment(models.Model):
                         "Please contact your accounting manager."
                     ))
 
-        return super().write(vals)
+        if 'journal_id' in vals:
+            self._check_journal_change(vals['journal_id'])
+
+        result = super().write(vals)
+        if 'memo' in vals:
+            # The memo can be edited on a posted payment; nothing is reposted,
+            # so it is copied to the mirror payment here.
+            self.env['nv.sync.engine'].sync_payment_memo(
+                self.filtered(lambda p: p.state != 'draft' and not p.is_mirror))
+        return result
+
+    def _check_journal_change(self, journal_id):
+        """A payment posted once keeps its journal: moving it would free its
+        number in the old journal, a gap in the (Official) numbering. Cancel
+        it and create a new payment instead. Mirrors are exempt: the sync
+        engine moves them when their source's journal link changes."""
+        for payment in self:
+            move = payment.move_id
+            if (
+                payment.journal_id.id != journal_id
+                and not payment.is_mirror
+                and move.posted_before
+                and move.name and move.name != '/'
+            ):
+                raise UserError(_(
+                    "Payment %(name)s already holds a number from journal %(journal)s, "
+                    "so its journal cannot be changed. Cancel it and create a new "
+                    "payment in the right journal.",
+                    name=move.name, journal=payment.journal_id.display_name,
+                ))
 
     # -------------------------------------------------------------------------
     # action_post override — push flag to the underlying journal entry
@@ -257,15 +327,39 @@ class AccountPayment(models.Model):
         )
         for pay in self:
             if pay.move_id and pay.move_id.state not in ('posted', 'cancel'):
-                move_vals = {
-                    'is_official': pay.is_official,
-                    'is_official_set': pay.is_official_set,
-                }
-                if pay.is_mirror:
-                    move_vals['is_mirror'] = True
-                if pay.source_move_ref:
-                    move_vals['source_move_ref'] = pay.source_move_ref
-                pay.move_id.sudo().write(move_vals)
+                pay._nv_push_flags_to_move()
+
+    def _generate_move_vals(self, write_off_line_vals=None, force_balance=None, line_ids=None):
+        """EXTENDS account: the journal entry is created with the payment's
+        O/NO flag and its "explicitly set" mark (D7), so "Require explicit
+        O/NO selection" applies to the entry as it does to the payment."""
+        vals = super()._generate_move_vals(
+            write_off_line_vals=write_off_line_vals,
+            force_balance=force_balance,
+            line_ids=line_ids,
+        )
+        vals['is_official'] = self.is_official
+        vals['is_official_set'] = self.is_official_set
+        return vals
+
+    def _nv_push_flags_to_move(self):
+        """Write the dual-bookkeeping flags of the payment on its unposted
+        entry. Only the values that differ are written: writing is_official
+        on a move always marks the flag as set (account.move.write), which
+        would hide a flag never chosen (D7)."""
+        self.ensure_one()
+        move = self.move_id
+        move_vals = {}
+        if move.is_official != self.is_official:
+            move_vals['is_official'] = self.is_official
+        if move.is_official_set != self.is_official_set:
+            move_vals['is_official_set'] = self.is_official_set
+        if self.is_mirror:
+            move_vals['is_mirror'] = True
+        if self.source_move_ref:
+            move_vals['source_move_ref'] = self.source_move_ref
+        if move_vals:
+            move.sudo().write(move_vals)
 
     def action_post(self):
         """
@@ -280,15 +374,7 @@ class AccountPayment(models.Model):
         """
         for payment in self:
             if payment.move_id and payment.move_id.state not in ('posted', 'cancel'):
-                move_vals = {
-                    'is_official': payment.is_official,
-                    'is_official_set': payment.is_official_set,
-                }
-                if payment.is_mirror:
-                    move_vals['is_mirror'] = True
-                if payment.source_move_ref:
-                    move_vals['source_move_ref'] = payment.source_move_ref
-                payment.move_id.sudo().write(move_vals)
+                payment._nv_push_flags_to_move()
 
         return super().action_post()
 
@@ -313,3 +399,14 @@ class AccountPayment(models.Model):
         if not self.move_id:
             raise UserError(_("No journal entry is linked to this payment."))
         return self.move_id.action_manual_sync()
+
+    def action_change_to_non_official(self):
+        self.ensure_one()
+        if not self.move_id:
+            raise UserError(_("No journal entry is linked to this payment."))
+        return self.move_id.action_change_to_non_official()
+
+    def action_compare_with_mirror(self):
+        if not self.move_id:
+            raise UserError(_("No journal entry is linked to this payment."))
+        return self.move_id.action_compare_with_mirror()
