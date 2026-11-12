@@ -1182,21 +1182,34 @@ class NvSyncEngine(models.AbstractModel):
         """
         The partner of a mirror document / line in target_company.
 
-        A shared contact (no company) or one of the official company is used
-        as it is: the mirror has exactly the source's contact. A contact of
-        another company is matched among the official company's and shared
-        contacts by VAT and name, then by name, else a stub is created (or,
-        with create=False, an empty recordset is returned).
+        The mirror uses the SAME contact as the source when that contact can be
+        used in target_company: a shared contact (no company) or one of the
+        official company. Searching by VAT first used to return the first
+        contact with that VAT, e.g. the first branch of a group sharing one VAT
+        (Wonders - SALAMEH JBEIL -> Wonders - ADMA), a child contact or a
+        duplicate. If the contact is not available in the official company yet
+        (company_ids, from nv_pr_prunelle when installed), it is added there.
 
-        A search on the VAT alone used to run first, over all contacts: it
-        returned any contact with that VAT (a child contact, a branch, a
-        duplicate) instead of the source's own contact.
+        A contact restricted to another company (company_id) is matched among
+        the official company's and shared contacts by VAT and name, then by
+        name, else a stub is created.
+
+        With create=False (preview of the Fix Mirror Partners wizard) nothing
+        is written: no company added, no stub created (an empty recordset is
+        returned instead).
         """
         Partner = self.env['res.partner'].sudo()
         if not partner:
             return Partner
         partner = partner.sudo()
         if not partner.company_id or partner.company_id == target_company:
+            if (
+                create
+                and 'company_ids' in partner._fields
+                and partner.company_ids
+                and target_company not in partner.company_ids
+            ):
+                partner.company_ids = [(4, target_company.id)]
             return partner
 
         domain = [
@@ -1244,17 +1257,21 @@ class NvSyncEngine(models.AbstractModel):
         'partner_bank_id', 'preferred_payment_method_line_id', 'invoice_user_id',
     )
 
-    def mirror_partner_changes(self, source):
+    def mirror_partner_changes(self, source, apply=False):
         """What fixing the partners of the mirror of `source` changes:
         (mirror, document values, [(mirror line, values)], payment values).
         Raises UserError when a contact has no counterpart in the official
-        company (nothing is created here)."""
+        company. Nothing is written unless `apply` (then a shared contact
+        restricted by company_ids gets the official company, see
+        _map_partner; no stub is ever created here)."""
         mirror = source.sudo().nv_mirror_move_id
         official_co = mirror.company_id
         mirror = mirror.with_env(self._mirror_env(official_co))
 
         def mapped(partner):
             match = self._map_partner(partner, official_co, create=False)
+            if apply and match == partner:
+                self._map_partner(partner, official_co)  # company_ids
             if partner and not match:
                 raise UserError(_(
                     "Contact '%(partner)s' has no counterpart in '%(company)s'.",
@@ -1349,7 +1366,8 @@ class NvSyncEngine(models.AbstractModel):
         for source in source_moves:
             try:
                 with self.env.cr.savepoint():
-                    mirror, move_vals, line_vals, payment_vals = self.mirror_partner_changes(source)
+                    mirror, move_vals, line_vals, payment_vals = self.mirror_partner_changes(
+                        source, apply=True)
                     if not (move_vals or line_vals or payment_vals):
                         results[source.id] = ('ok', False)
                         continue

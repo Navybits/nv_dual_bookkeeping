@@ -149,11 +149,12 @@ class NvOfficialChangeWizard(models.TransientModel):
         else:
             move.button_draft()
         self._delete_mirror(move)
-        # Clearing the name in the same write is what allows the stream switch
-        # (see account.move.write Rule 1b); posting assigns the next NO number.
-        move.write({'name': False, 'is_official': False})
+        # Clearing the name allows the stream switch; posting assigns the next
+        # NO number. nv_official_change: the user-edit checks (flag must match
+        # the partner, locked once numbered) let this wizard through.
+        move.with_context(nv_official_change=True).write({'name': False, 'is_official': False})
         if payment:
-            payment.write({'is_official': False})
+            payment.with_context(nv_official_change=True).write({'is_official': False})
             payment.action_post()
         else:
             move.action_post()
