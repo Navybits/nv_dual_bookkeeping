@@ -126,6 +126,24 @@ class AccountPayment(models.Model):
             raise UserError(
                 self.env['account.move']._nv_partner_mismatch_message(self.partner_id))
 
+    def web_save(self, vals, specification, next_id=None):
+        """Form save only (driver payments, register-payment wizard and the
+        sync engine call create()/write() directly, never web_save): a NEW
+        payment's Official flag must match its customer, whatever the order
+        the form was filled in. Existing payments are checked in write()."""
+        if not self and vals.get('partner_id') and 'is_official' in vals:
+            company = (self.env['res.company'].browse(vals['company_id'])
+                       if vals.get('company_id') else self.env.company)
+            partner = self.env['res.partner'].browse(vals['partner_id'])
+            if (
+                not self.env.su
+                and not company.is_official_company
+                and bool(vals['is_official']) != partner.is_official
+            ):
+                raise UserError(
+                    self.env['account.move']._nv_partner_mismatch_message(partner))
+        return super().web_save(vals, specification, next_id=next_id)
+
     def _nv_check_locked_after_number(self, vals):
         """User edits of existing payments in an operating company: same rules
         as account.move (flag must match the customer; once numbered no O/NO

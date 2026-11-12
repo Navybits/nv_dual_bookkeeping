@@ -206,6 +206,23 @@ class AccountMove(models.Model):
             return _("%s is an Official customer/vendor: the document must be Official.") % partner.display_name
         return _("%s is a Non-Official customer/vendor: the document cannot be Official.") % partner.display_name
 
+    def web_save(self, vals, specification, next_id=None):
+        """Form save only (code creating entries - drivers, SO/PO invoicing,
+        sync engine - calls create()/write() directly, never web_save): a NEW
+        entry's Official flag must match its partner, whatever the order the
+        form was filled in. Existing entries are checked in write()."""
+        if not self and vals.get('partner_id') and 'is_official' in vals:
+            company = (self.env['res.company'].browse(vals['company_id'])
+                       if vals.get('company_id') else self.env.company)
+            partner = self.env['res.partner'].browse(vals['partner_id'])
+            if (
+                not self.env.su
+                and not company.is_official_company
+                and bool(vals['is_official']) != partner.is_official
+            ):
+                raise UserError(self._nv_partner_mismatch_message(partner))
+        return super().web_save(vals, specification, next_id=next_id)
+
     def _nv_check_locked_after_number(self, vals):
         """User edits of existing entries in an operating company:
         - the Official flag must match the partner's type;
