@@ -266,8 +266,9 @@ class TestMirrorCheck(DualBookkeepingCommon):
         invoice = self._invoice(post=True)
         mirror = self._mirror(invoice)
         other = self.env["res.partner"].create({"name": "Wrong contact"})
-        self._sql("UPDATE account_move SET partner_id = %s, invoice_date = '2026-02-01' WHERE id = %s",
-                  (other.id, mirror.id))
+        self._sql("UPDATE account_move SET partner_id = %s WHERE id = %s", (other.id, mirror.id))
+        self._sql("UPDATE account_move_line SET price_unit = price_unit + 1 WHERE id = %s",
+                  (mirror.invoice_line_ids.id,))
         self.assertEqual(self._classify(invoice), "rewrite")
         wizard = self._check(invoice)
         wizard.doc_ids.selected = True
@@ -342,3 +343,89 @@ class TestMirrorCheck(DualBookkeepingCommon):
                     self.env[model].with_user(user).create({})
             self.assertTrue(self.env[model].with_user(repairer).create({}))
         self.assertTrue(repairer.has_group("account.group_account_manager"), "implies accounting manager")
+
+    # ------------------------------------------------------------------
+    # Dates and payment terms fixed in place (2026-11-13)
+    # ------------------------------------------------------------------
+
+    def _set_mirror_dates(self, mirror, **dates):
+        """Give a posted mirror other dates, as a sync that missed them."""
+        sets = ", ".join(f"{name} = %({name})s" for name in dates)
+        self._sql(f"UPDATE account_move SET {sets} WHERE id = %(m)s", {**dates, "m": mirror.id})
+        if "date" in dates:
+            self._sql("UPDATE account_move_line SET date = %(date)s WHERE move_id = %(m)s",
+                      {"date": dates["date"], "m": mirror.id})
+
+    def test_payment_term_and_due_date_light(self):
+        invoice = self._invoice(invoice_payment_term_id=self.term.id, post=True)
+        self._pay(invoice)
+        mirror = self._mirror(invoice)
+        state = mirror.payment_state
+        thirty = self.env.ref("account.account_payment_term_30days")
+        self._set_mirror_dates(mirror, invoice_payment_term_id=thirty.id, invoice_date_due="2026-02-09")
+        self._sql("UPDATE account_move_line SET date_maturity = '2026-02-09' "
+                  "WHERE move_id = %s AND display_type = 'payment_term'", (mirror.id,))
+        labels = [label for _group, label in self._labels(invoice)]
+        self.assertIn("Payment Terms", labels)
+        self.assertEqual(self._classify(invoice), "light")
+
+        wizard = self._check(invoice)
+        wizard.action_fix()
+        self.assertEqual(wizard.doc_ids.state, "fixed", wizard.doc_ids.message)
+        self.assertEqual(self._mirror(invoice), mirror)
+        self.assertEqual(mirror.state, "posted")
+        self.assertEqual(mirror.invoice_payment_term_id, self.term)
+        self.assertEqual(mirror.payment_state, state, "reconciliation kept")
+        self.assertEqual(self._compare(invoice), [])
+
+    def test_invoice_date_light(self):
+        invoice = self._invoice(post=True)
+        mirror = self._mirror(invoice)
+        self._set_mirror_dates(mirror, invoice_date="2026-01-05")
+        self.assertEqual(self._classify(invoice), "light")
+        self._check(invoice).action_fix()
+        self.assertEqual(self._compare(invoice), [])
+
+    def test_accounting_date_same_period_light(self):
+        invoice = self._invoice(post=True, date="2026-01-10")
+        mirror = self._mirror(invoice)
+        self._set_mirror_dates(mirror, date="2026-01-20")
+        self.assertEqual(self._classify(invoice), "light")
+        self._check(invoice).action_fix()
+        self.assertEqual(str(mirror.date), "2026-01-10")
+        self.assertEqual({str(d) for d in mirror.line_ids.mapped("date")}, {"2026-01-10"})
+        self.assertEqual(mirror.state, "posted")
+        self.assertEqual(self._compare(invoice), [])
+
+    def test_accounting_date_other_year_rewrite(self):
+        """The date can be set in place only while the mirror's number fits
+        it (…/26/… = 2026); another year needs a new number: rewrite."""
+        from datetime import date
+        invoice = self._invoice(post=True, date="2026-01-10")
+        mirror = self._mirror(invoice)
+        checker = self.env["nv.mirror.checker"]
+        self.assertTrue(checker._date_keeps_number(mirror, date(2026, 3, 1)))
+        self.assertFalse(checker._date_keeps_number(mirror, date(2025, 12, 20)))
+        diff = {"group": "header", "key": "date"}
+        self._sql("UPDATE account_move SET date = '2025-12-20' WHERE id = %s", (invoice.id,))
+        self._sql("UPDATE account_move_line SET date = '2025-12-20' WHERE move_id = %s", (invoice.id,))
+        self.assertFalse(checker._is_light(invoice, mirror, diff))
+        self.assertEqual(self._classify(invoice), "rewrite")
+
+    def test_installments_changed_rewrite(self):
+        split = self.env["account.payment.term"].sudo().create({
+            "name": "50/50",
+            "line_ids": [
+                Command.create({"value": "percent", "value_amount": 50.0, "nb_days": 30}),
+                Command.create({"value": "percent", "value_amount": 50.0, "nb_days": 60}),
+            ],
+        })
+        invoice = self._invoice(invoice_payment_term_id=split.id, post=True)
+        mirror = self._mirror(invoice)
+        due = mirror.line_ids.filtered(lambda l: l.display_type == "payment_term").sorted("date_maturity")
+        self.assertEqual(len(due), 2)
+        for line, delta in zip(due, (10, -10)):
+            self._sql("UPDATE account_move_line SET balance = balance + %(d)s, debit = debit + %(d)s, "
+                      "amount_currency = amount_currency + %(d)s WHERE id = %(l)s", {"d": delta, "l": line.id})
+        self.assertIn(("header", "Due Lines"), self._labels(invoice))
+        self.assertEqual(self._classify(invoice), "rewrite")

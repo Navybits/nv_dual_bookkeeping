@@ -120,7 +120,11 @@ class NvMirrorChecker(models.AbstractModel):
                 if not self._same_value(source[name], mirror[name]):
                     add(source._fields[name].get_description(self.env)['string'], source[name], mirror[name], name)
             if not self._same_by_name(source.invoice_payment_term_id, mirror.invoice_payment_term_id, official_co):
-                add(_("Payment Terms"), source.invoice_payment_term_id, mirror.invoice_payment_term_id)
+                add(_("Payment Terms"), source.invoice_payment_term_id, mirror.invoice_payment_term_id,
+                    'payment_term')
+            source_due, mirror_due = self._due_lines(source), self._due_lines(mirror)
+            if source_due != mirror_due:
+                add(_("Due Lines"), self._due_text(source_due), self._due_text(mirror_due), 'due_lines')
             # a draft mirror (auto-post off) cannot be reconciled yet
             if mirror.state == 'posted' and not self._same_value(source.payment_state, mirror.payment_state):
                 add(_("Payment Status"), self._selection(source, 'payment_state'),
@@ -266,6 +270,63 @@ class NvMirrorChecker(models.AbstractModel):
         ('reconciliation', 'missing'),
     }
 
+    def _due_lines(self, move):
+        """[(due date, amount)] of the receivable / payable (due) lines,
+        by date."""
+        lines = move.line_ids.filtered(lambda l: l.display_type == 'payment_term')
+        return sorted((l.date_maturity, round(l.balance, AMOUNT_PRECISION)) for l in lines)
+
+    def _due_text(self, due_lines):
+        return '; '.join(f"{date}: {amount:,.2f}" for date, amount in due_lines) or False
+
+    def _same_installments(self, source, mirror):
+        """Same number of due lines with the same amounts (by date): only
+        their dates differ, so the term and the dates can be set in place."""
+        source_due, mirror_due = self._due_lines(source), self._due_lines(mirror)
+        return len(source_due) == len(mirror_due) and all(
+            float_compare(a[1], b[1], precision_digits=AMOUNT_PRECISION) == 0
+            for a, b in zip(source_due, mirror_due))
+
+    def _date_keeps_number(self, mirror, date):
+        """The mirror's number still fits `date`: the year (and month) its
+        number carries, parsed by Odoo's sequence format, are those of the
+        date. The accounting date can then be set in place; otherwise the
+        mirror needs a new number (rewrite)."""
+        if not mirror.name or mirror.name == '/':
+            return True
+        try:
+            format_values = mirror._get_sequence_format_param(mirror.name)[1]
+            reset = mirror._deduce_sequence_number_reset(mirror.name)
+        except Exception:  # noqa: BLE001 - unknown format: be safe
+            return False
+        if reset == 'year_range':
+            fiscal = mirror.company_id.compute_fiscalyear_dates(date)
+            start_year, end_year = fiscal['date_from'].year, fiscal['date_to'].year
+        else:
+            start_year = end_year = date.year
+        if format_values.get('year') and not mirror._year_match(format_values['year'], start_year):
+            return False
+        if format_values.get('year_end') and not mirror._year_match(format_values['year_end'], end_year):
+            return False
+        if format_values.get('month') and format_values['month'] != date.month:
+            return False
+        return True
+
+    def _is_light(self, source, mirror, diff):
+        key = (diff['group'], diff['key'])
+        if key in self.LIGHT:
+            return True
+        if key == ('header', 'invoice_date'):
+            return True
+        if key in (('header', 'invoice_date_due'), ('header', 'payment_term'), ('header', 'due_lines')):
+            # without term: the due date is set in place; with one, the dates
+            # come from the due lines, set in place when only their dates differ
+            return not source.invoice_payment_term_id and key == ('header', 'invoice_date_due') or (
+                bool(mirror) and self._same_installments(source, mirror))
+        if key == ('header', 'date'):
+            return bool(mirror) and self._date_keeps_number(mirror, source.date)
+        return False
+
     @api.model
     def classify(self, source, diffs):
         """(fix, reason) for a document and its differences, fix being
@@ -276,14 +337,7 @@ class NvMirrorChecker(models.AbstractModel):
             return 'ok', False
         source = source.sudo()
         mirror = source.nv_mirror_move_id
-        light = all(
-            (d['group'], d['key']) in self.LIGHT
-            # the due date is set in place only without payment term (with
-            # one, it comes from the term lines)
-            or (d['group'], d['key']) == ('header', 'invoice_date_due')
-            and not source.invoice_payment_term_id
-            for d in diffs
-        )
+        light = all(self._is_light(source, mirror, d) for d in diffs)
         fix = 'light' if light else 'rewrite'
         if fix == 'rewrite' and source.state != 'posted':
             return 'cannot', _("The document is not posted: its mirror is rewritten when it is posted.")
@@ -296,6 +350,15 @@ class NvMirrorChecker(models.AbstractModel):
                 return 'cannot', _("The mirror %(mirror)s is in a locked period (%(locks)s).",
                                    mirror=mirror.name,
                                    locks=mirror.company_id._format_lock_dates(violated))
+            if source.date != mirror.date:
+                # the mirror moves to the source's date: that period too
+                violated = mirror.company_id._get_violated_lock_dates(
+                    source.date, bool(mirror.line_ids.tax_ids or mirror.line_ids.tax_line_id),
+                    mirror.journal_id)
+                if violated:
+                    return 'cannot', _("The date %(date)s is in a locked period of %(company)s (%(locks)s).",
+                                       date=source.date, company=mirror.company_id.name,
+                                       locks=mirror.company_id._format_lock_dates(violated))
         return fix, False
 
     # =========================================================================
