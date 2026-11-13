@@ -67,7 +67,7 @@
         <field name="target">new</field>
         <field name="binding_model_id" ref="account.model_account_move"/>
         <field name="binding_view_types">list,form</field>
-        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_sync_manager')])]"/>
+        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_mirror_repair')])]"/>
     </record>
 
     <record id="action_nv_mirror_partner_fix_wizard_payments" model="ir.actions.act_window">
@@ -77,7 +77,7 @@
         <field name="target">new</field>
         <field name="binding_model_id" ref="account.model_account_payment"/>
         <field name="binding_view_types">list,form</field>
-        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_sync_manager')])]"/>
+        <field name="group_ids" eval="[Command.set([ref('nv_dual_bookkeeping.group_mirror_repair')])]"/>
     </record>
 
 </odoo>

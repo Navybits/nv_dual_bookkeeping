@@ -1437,6 +1437,7 @@ class NvSyncEngine(models.AbstractModel):
                 mirror.origin_payment_id.action_post()
             else:
                 mirror.action_post()
+        self._repair_mirror_dates(source, mirror, official_co)
         mirror, move_vals, line_vals, payment_vals = self.mirror_partner_changes(source, apply=True)
         if move_vals or line_vals or payment_vals:
             result = self.fix_mirror_partners(source)[source.id]
@@ -1452,6 +1453,42 @@ class NvSyncEngine(models.AbstractModel):
         if source.origin_payment_id:
             self.sync_payment_memo(source.origin_payment_id)
         self._sync_existing_reconciliations(source, mirror, official_co)
+
+    def _repair_mirror_dates(self, source, mirror, official_co):
+        """Light repair of the dates of a posted mirror: accounting date (its
+        journal items follow), invoice date, payment term and the dates of
+        its due lines, in place. Only reached when its number still fits the
+        date and the installments are the same (nv.mirror.checker.classify),
+        so no amount and no line changes.
+
+        skip_readonly_check: Odoo refuses these fields on a posted entry
+        otherwise (used by Odoo itself); lock dates and hashes are still
+        checked. skip_invoice_sync: without it the new term would make Odoo
+        delete and recreate the due lines (breaking their reconciliation)."""
+        vals = {}
+        if mirror.date != source.date:
+            vals['date'] = source.date
+        if source.is_invoice(include_receipts=True):
+            if mirror.invoice_date != source.invoice_date:
+                vals['invoice_date'] = source.invoice_date
+            term = self._map_payment_term(source.invoice_payment_term_id, official_co)
+            if mirror.invoice_payment_term_id != term:
+                vals['invoice_payment_term_id'] = term.id
+        if vals:
+            mirror.with_context(skip_readonly_check=True, skip_invoice_sync=True).write(vals)
+        if not source.is_invoice(include_receipts=True):
+            return
+        by_date = lambda move: move.line_ids.filtered(  # noqa: E731
+            lambda l: l.display_type == 'payment_term').sorted(lambda l: (l.date_maturity, l.balance))
+        source_due, mirror_due = by_date(source), by_date(mirror)
+        if len(source_due) == len(mirror_due):
+            for line, mirror_line in zip(source_due, mirror_due):
+                if mirror_line.date_maturity != line.date_maturity:
+                    mirror_line.with_context(skip_invoice_sync=True).write(
+                        {'date_maturity': line.date_maturity})
+        if mirror.invoice_date_due != source.invoice_date_due:
+            mirror.with_context(skip_invoice_sync=True).write(
+                {'invoice_date_due': source.invoice_date_due})
 
     # =========================================================================
     # Bus notification

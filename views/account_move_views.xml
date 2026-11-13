@@ -130,7 +130,7 @@
                         string="Compare with Mirror"
                         class="btn btn-secondary"
                         invisible="not is_official or is_mirror or state == 'draft' or not company_official_company_id"
-                        groups="account.group_account_manager"/>
+                        groups="nv_dual_bookkeeping.group_mirror_repair"/>
             </xpath>
 
         </field>
