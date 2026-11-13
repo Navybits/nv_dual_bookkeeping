@@ -866,7 +866,9 @@ class NvSyncEngine(models.AbstractModel):
             )
             return
 
-        self._reconcile_mirror_lines(mirror_debit_move, mirror_credit_move, official_co)
+        self._reconcile_mirror_lines(
+            mirror_debit_move, mirror_credit_move, official_co,
+            source_debit_line=debit_line, source_credit_line=credit_line)
 
     def _do_reconcile_unsync(self, partial_reconcile):
         """
@@ -893,10 +895,12 @@ class NvSyncEngine(models.AbstractModel):
         if not mirror_debit_move or not mirror_credit_move:
             return
 
-        # Find the partial reconcile that links the two mirror lines
+        # The partial reconcile that links the copies of these two lines (an
+        # entry with several customers, e.g. an opening entry, has several
+        # receivable lines: the one of this customer, not the first one).
         mirror_partial = self.env['account.partial.reconcile'].sudo().search([
-            ('debit_move_id.move_id', '=', mirror_debit_move.id),
-            ('credit_move_id.move_id', '=', mirror_credit_move.id),
+            ('debit_move_id', 'in', self._mirror_lines_of(debit_line, mirror_debit_move, official_co).ids),
+            ('credit_move_id', 'in', self._mirror_lines_of(credit_line, mirror_credit_move, official_co).ids),
         ], limit=1)
 
         if mirror_partial:
@@ -937,32 +941,56 @@ class NvSyncEngine(models.AbstractModel):
 
                 # Determine which mirror is debit and which is credit
                 if line == partial.debit_move_id:
-                    self._reconcile_mirror_lines(mirror_move, mirror_other, official_co)
+                    self._reconcile_mirror_lines(
+                        mirror_move, mirror_other, official_co,
+                        source_debit_line=line, source_credit_line=other_line)
                 else:
-                    self._reconcile_mirror_lines(mirror_other, mirror_move, official_co)
+                    self._reconcile_mirror_lines(
+                        mirror_other, mirror_move, official_co,
+                        source_debit_line=other_line, source_credit_line=line)
 
-    def _reconcile_mirror_lines(self, mirror_debit_move, mirror_credit_move, official_co):
+    def _reconcile_mirror_lines(self, mirror_debit_move, mirror_credit_move, official_co,
+                                source_debit_line=None, source_credit_line=None):
         """
-        Find the outstanding receivable/payable lines in both mirror moves and
-        reconcile them in the official company context.
+        Reconcile, in the official company, the copies of the two source
+        lines that were reconciled (source_debit_line / source_credit_line):
+        the mirror line of the same customer, account and amount
+        (_mirror_lines_of). An entry with several customers (an opening
+        entry, a write-off for many customers) has one receivable line per
+        customer: taking "the first open receivable line" matched the
+        payment of a customer with the line of another one.
+
+        Without source lines (old callers): the first open receivable /
+        payable line of each mirror.
 
         Non-blocking: logs a warning and returns if lines cannot be found or
         if they are already fully reconciled.
         """
-        debit_line = self._get_reconcilable_line(mirror_debit_move, want_debit=True)
-        credit_line = self._get_reconcilable_line(mirror_credit_move, want_debit=False)
+        if source_debit_line and source_credit_line:
+            debit_lines = self._mirror_lines_of(source_debit_line, mirror_debit_move, official_co)
+            credit_lines = self._mirror_lines_of(source_credit_line, mirror_credit_move, official_co)
+            if debit_lines and credit_lines and self.env['account.partial.reconcile'].sudo().search_count([
+                ('debit_move_id', 'in', debit_lines.ids),
+                ('credit_move_id', 'in', credit_lines.ids),
+            ], limit=1):
+                return  # already reconciled together
+            debit_line = debit_lines.filtered(lambda l: not l.reconciled)[:1]
+            credit_line = credit_lines.filtered(lambda l: not l.reconciled)[:1]
+            if not debit_lines or not credit_lines:
+                _logger.warning(
+                    "nv_dual_bookkeeping: no line of %s / %s copies the reconciled line "
+                    "(customer, account, amount). Skipping reconciliation sync.",
+                    mirror_debit_move.name, mirror_credit_move.name,
+                )
+                return
+        else:
+            debit_line = self._get_reconcilable_line(mirror_debit_move, want_debit=True)
+            credit_line = self._get_reconcilable_line(mirror_credit_move, want_debit=False)
 
         if not debit_line or not credit_line:
-            _logger.warning(
-                "nv_dual_bookkeeping: Could not find reconcilable lines for mirrors "
-                "%s / %s. Skipping reconciliation sync.",
-                mirror_debit_move.name, mirror_credit_move.name,
-            )
-            return
-
-        if debit_line.reconciled or credit_line.reconciled:
             _logger.debug(
-                "nv_dual_bookkeeping: Mirror lines already reconciled (%s / %s). Skipping.",
+                "nv_dual_bookkeeping: Mirror lines already reconciled or not found "
+                "(%s / %s). Skipping.",
                 mirror_debit_move.name, mirror_credit_move.name,
             )
             return
@@ -990,6 +1018,93 @@ class NvSyncEngine(models.AbstractModel):
         if mirror_move.state == 'posted' and mirror_move.company_id == official_co:
             return mirror_move
         return self.env['account.move']
+
+    def _mirror_lines_of(self, source_line, mirror_move, official_co):
+        """The receivable / payable lines of mirror_move that copy
+        source_line: same account (code) and same customer (mapped as the sync
+        maps it), the same amount when one has it. The line at the same
+        position comes first: entries are copied line by line, in order.
+        Empty when no line copies it (never another customer's line)."""
+        Line = self.env['account.move.line']
+        candidates = mirror_move.line_ids.filtered(
+            lambda l: l.account_id.account_type in RECONCILABLE_TYPES)
+        if not candidates or not source_line:
+            return Line
+        code = source_line.account_id.with_company(source_line.company_id).code
+        partner = self._map_partner(source_line.partner_id, official_co, create=False)
+        same_account = candidates.filtered(
+            lambda l: l.account_id.with_company(official_co).code == code)
+        same = (
+            same_account.filtered(lambda l: l.partner_id == partner)
+            or same_account.filtered(
+                lambda l: partner and l.partner_id.commercial_partner_id == partner.commercial_partner_id)
+        )
+        currency = mirror_move.company_currency_id
+        same_amount = same.filtered(
+            lambda l: currency.compare_amounts(l.balance, source_line.balance) == 0)
+        source_lines = source_line.move_id.line_ids.sorted('id')
+        mirror_lines = mirror_move.line_ids.sorted('id')
+        if len(source_lines) == len(mirror_lines) and source_line.id in source_lines.ids:
+            twin = mirror_lines[source_lines.ids.index(source_line.id)]
+            if twin in same_amount:
+                return twin
+        return same_amount or same
+
+    @api.model
+    def relink_mirror_reconciliations(self, source_moves):
+        """Repair the reconciliations of the mirrors of source_moves (posted
+        Official documents of an operating company): a reconciliation in the
+        official company between two mirrors that copies no reconciliation of
+        the operating company - e.g. the opening entry's line of one customer
+        matched with the payment of another customer - is removed, then the
+        reconciliations of the documents concerned are copied again, line to
+        line. The documents themselves are never changed.
+
+        :return: {source name: (removed, added)} reconciliations of its mirror
+        """
+        Partial = self.env['account.partial.reconcile'].sudo()
+        Move = self.env['account.move'].sudo()
+        results = {}
+        to_resync = Move
+        for source in source_moves.sudo().filtered(lambda m: not m.is_mirror):
+            official_co = source.company_id.official_company_id
+            mirror = official_co and self._find_mirror_move(source, official_co)
+            if not mirror:
+                continue
+            keep = Partial
+            for line in source.line_ids:
+                for partial in (line.matched_debit_ids | line.matched_credit_ids):
+                    other_line = partial.debit_move_id if partial.credit_move_id == line else partial.credit_move_id
+                    mirror_other = self._find_mirror_move(other_line.move_id, official_co)
+                    if not other_line.move_id.is_official or not mirror_other:
+                        continue
+                    debit_line, credit_line = (
+                        (line, other_line) if partial.debit_move_id == line else (other_line, line))
+                    debit_mirror, credit_mirror = (
+                        (mirror, mirror_other) if partial.debit_move_id == line else (mirror_other, mirror))
+                    keep |= Partial.search([
+                        ('debit_move_id', 'in', self._mirror_lines_of(debit_line, debit_mirror, official_co).ids),
+                        ('credit_move_id', 'in', self._mirror_lines_of(credit_line, credit_mirror, official_co).ids),
+                    ])
+            mirror_partials = mirror.line_ids.matched_debit_ids | mirror.line_ids.matched_credit_ids
+            wrong = (mirror_partials - keep).filtered(
+                lambda p: p.debit_move_id.move_id.is_mirror and p.credit_move_id.move_id.is_mirror)
+            # the other documents of the removed reconciliations are re-copied too
+            to_resync |= source | Move.search([
+                ('nv_mirror_move_id', 'in', (wrong.debit_move_id.move_id | wrong.credit_move_id.move_id).ids)])
+            results[source.name] = [len(wrong), 0]
+            wrong.unlink()
+        for source in to_resync:
+            official_co = source.company_id.official_company_id
+            mirror = self._find_mirror_move(source, official_co)
+            if not mirror:
+                continue
+            before = len(mirror.line_ids.matched_debit_ids | mirror.line_ids.matched_credit_ids)
+            self._sync_existing_reconciliations(source, mirror, official_co)
+            mirror.line_ids.invalidate_recordset(['matched_debit_ids', 'matched_credit_ids'])
+            added = len(mirror.line_ids.matched_debit_ids | mirror.line_ids.matched_credit_ids) - before
+            results.setdefault(source.name, [0, 0])[1] += max(added, 0)
+        return {name: tuple(counts) for name, counts in results.items()}
 
     def _get_reconcilable_line(self, move, want_debit=True):
         """

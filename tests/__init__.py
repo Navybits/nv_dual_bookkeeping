@@ -6,3 +6,4 @@ from . import test_mirror_fields
 from . import test_sequence_lock
 from . import test_partner_fix
 from . import test_mirror_check
+from . import test_reconcile_lines
