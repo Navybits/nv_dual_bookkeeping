@@ -303,7 +303,71 @@ class AccountMove(models.Model):
                 and bool(vals['is_official']) != partner.is_official
             ):
                 raise UserError(self._nv_partner_mismatch_message(partner))
-        return super().web_save(vals, specification, next_id=next_id)
+        # journal entries: customers / vendors of the lines checked on save
+        # (create() / write() below, form only)
+        return super(AccountMove, self.with_context(nv_check_entry_partners=True)).web_save(
+            vals, specification, next_id=next_id)
+
+    # -------------------------------------------------------------------------
+    # Manual journal entries: customers / vendors of the lines
+    # -------------------------------------------------------------------------
+
+    def _nv_entry_partner_lines(self):
+        """Customer / vendor lines (receivable / payable account, with a
+        partner) of a manual journal entry of an operating company; empty for
+        other documents (invoices, payments, bank statement entries, mirrors,
+        the Official Books company)."""
+        self.ensure_one()
+        if (
+            self.move_type != 'entry'
+            or self.is_mirror
+            or self.origin_payment_id
+            or self.statement_line_id
+            or self.company_id.is_official_company
+        ):
+            return self.env['account.move.line']
+        return self.line_ids.filtered(
+            lambda l: l.partner_id
+            and l.account_id.account_type in ('asset_receivable', 'liability_payable'))
+
+    def _nv_check_entry_partners(self):
+        """Form save of a draft journal entry: its customers / vendors are all
+        of one type (P1 or P2) and the entry has that type, so an Official
+        customer's entry is never posted Non-Official (missing in the Official
+        Books) and the other way round."""
+        if self._nv_skip_dual_checks():
+            return
+        for move in self.filtered(lambda m: m.state == 'draft'):
+            partners = move._nv_entry_partner_lines().partner_id
+            official = partners.filtered('is_official')
+            non_official = partners - official
+            if official and non_official:
+                raise UserError(_(
+                    "Official (P1) and Non-Official (P2) customers / vendors cannot be in "
+                    "the same journal entry: %(official)s / %(non_official)s.",
+                    official=official[:1].display_name, non_official=non_official[:1].display_name,
+                ))
+            wrong = non_official if move.is_official else official
+            if wrong:
+                raise UserError(_(
+                    "%(partner)s is %(type)s, but this journal entry is %(entry)s. "
+                    "Set the entry to %(type)s with the O/NO toggle, or use another partner.",
+                    partner=wrong[:1].display_name,
+                    type=_("Official") if wrong[:1].is_official else _("Non-Official"),
+                    entry=_("Official") if move.is_official else _("Non-Official"),
+                ))
+
+    def _nv_entry_flag_confirmed(self):
+        """A manual journal entry needs no toggle click before posting when it
+        is Official (the default is Non-Official: someone chose it) or when
+        its customers / vendors confirm its type."""
+        self.ensure_one()
+        if self.move_type != 'entry' or self.company_id.is_official_company:
+            return False
+        if self.is_official:
+            return True
+        partners = self._nv_entry_partner_lines().partner_id
+        return bool(partners) and not any(partners.mapped('is_official'))
 
     # -------------------------------------------------------------------------
     # Sequence overrides (Odoo 19 native sequence.mixin)
@@ -625,13 +689,26 @@ class AccountMove(models.Model):
             # Only auto-set when not already supplied and not in Official Books company.
             # This covers programmatic creation (SO/PO invoice, batch billing, etc.)
             # where partner_id is in vals but is_official is not.
+            reconcile_flag = self.env.context.get('nv_reconcile_is_official')
+            company = (self.env['res.company'].browse(vals['company_id'])
+                       if vals.get('company_id') else self.env.company)
+            if (
+                reconcile_flag is not None and 'is_official' not in vals
+                and not company.is_official_company
+            ):
+                # write-off / transfer of the reconcile screen: the flag of
+                # the lines it closes (wizard/account_reconcile_wizard.py)
+                vals['is_official'] = reconcile_flag
             if 'is_official' not in vals and not self.env.company.is_official_company:
                 partner_id = vals.get('partner_id')
                 if partner_id:
                     partner = self.env['res.partner'].browse(partner_id)
                     vals['is_official'] = partner.is_official
             vals.setdefault('is_official_set', True)
-        return super().create(vals_list)
+        moves = super().create(vals_list)
+        if self.env.context.get('nv_check_entry_partners'):
+            moves._nv_check_entry_partners()
+        return moves
 
     # -------------------------------------------------------------------------
     # Write override — field locking
@@ -698,6 +775,8 @@ class AccountMove(models.Model):
                     ))
 
         result = super().write(vals)
+        if self.env.context.get('nv_check_entry_partners') and {'is_official', 'line_ids'} & set(vals):
+            self._nv_check_entry_partners()
         if {'invoice_date_due', 'line_ids', 'invoice_line_ids'} & set(vals):
             # editable on a posted document: nothing is reposted, so the
             # mirror is updated here
@@ -725,7 +804,11 @@ class AccountMove(models.Model):
             require_flag = ICP.get_param(
                 'nv_dual_bookkeeping.require_official_flag', 'False'
             ).strip().lower() in ('true', '1')
-            if require_flag and not move.is_official_set and not move.company_id.is_official_company:
+            if (
+                require_flag and not move.is_official_set
+                and not move.company_id.is_official_company
+                and not move._nv_entry_flag_confirmed()
+            ):
                 raise UserError(_(
                     "Please explicitly set Official or Non-Official on '%s' before posting, "
                     "with the O/NO toggle of the form."

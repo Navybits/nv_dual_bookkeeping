@@ -1,6 +1,7 @@
 """D6: taxes by name and type (then amount); a missing tax fails the sync."""
 
 from odoo import Command
+from odoo.exceptions import UserError
 from odoo.tests import tagged
 
 from .common import DualBookkeepingCommon
@@ -108,12 +109,35 @@ class TestMapping(DualBookkeepingCommon):
         payment = self._payment(partner=other)
         self.assertEqual(self._mirror(payment.move_id).partner_id, other)
 
-    def test_mirror_partner_restricted_to_main_uses_search(self):
+    def test_mirror_partner_restricted_to_main_refused(self):
         """A contact restricted to the operating company cannot be used in the
-        official one: the former VAT search still applies."""
+        official one: no contact found by VAT / name instead (not even a twin
+        with the same VAT and name), no stub - the sync stops until the
+        contact is made available there."""
         engine = self.env["nv.sync.engine"]
         main_only = self.env["res.partner"].create(
             {"name": "Main only", "vat": "NVMAINONLY1", "company_id": self.company.id})
-        official_twin = self._both()["res.partner"].create(
+        self._both()["res.partner"].create(
             {"name": "Main only", "vat": "NVMAINONLY1", "company_id": self.official.id})
-        self.assertEqual(engine._map_partner(main_only, self.official), official_twin)
+        with self.assertRaisesRegex(UserError, "is not available in"):
+            engine._map_partner(main_only, self.official)
+        self.assertFalse(engine._map_partner(main_only, self.official, create=False))
+
+    def test_mirror_partner_companies_without_official_refused(self):
+        """companies filled without the Official Books company: not synced,
+        and the sync does not add it by itself."""
+        if "company_ids" not in self.env["res.partner"]._fields:
+            self.skipTest("company_ids needs nv_pr_prunelle")
+        engine = self.env["nv.sync.engine"]
+        partner = self.env["res.partner"].create(
+            {"name": "Main companies only", "company_ids": [(6, 0, self.company.ids)]})
+        with self.assertRaisesRegex(UserError, "is not available in"):
+            engine._map_partner(partner, self.official)
+        self.assertNotIn(self.official, partner.company_ids)
+        partner.company_ids = [(4, self.official.id)]
+        self.assertEqual(engine._map_partner(partner, self.official), partner)
+
+    def test_mirror_partner_empty_companies_allowed(self):
+        engine = self.env["nv.sync.engine"]
+        partner = self.env["res.partner"].create({"name": "All companies"})
+        self.assertEqual(engine._map_partner(partner, self.official), partner)

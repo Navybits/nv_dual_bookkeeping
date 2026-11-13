@@ -1034,11 +1034,8 @@ class NvSyncEngine(models.AbstractModel):
         partner = self._map_partner(source_line.partner_id, official_co, create=False)
         same_account = candidates.filtered(
             lambda l: l.account_id.with_company(official_co).code == code)
-        same = (
-            same_account.filtered(lambda l: l.partner_id == partner)
-            or same_account.filtered(
-                lambda l: partner and l.partner_id.commercial_partner_id == partner.commercial_partner_id)
-        )
+        # the same contact only: never a parent, child or sibling branch
+        same = same_account.filtered(lambda l: l.partner_id == partner)
         currency = mirror_move.company_currency_id
         same_amount = same.filtered(
             lambda l: currency.compare_amounts(l.balance, source_line.balance) == 0)
@@ -1295,69 +1292,44 @@ class NvSyncEngine(models.AbstractModel):
 
     def _map_partner(self, partner, target_company, create=True):
         """
-        The partner of a mirror document / line in target_company.
+        The partner of a mirror document / line in target_company: always the
+        SAME contact (same partner_id), never another one found by VAT or name
+        (that returned e.g. another branch of a group sharing one VAT: Wonders
+        - SALAMEH JBEIL -> Wonders - ADMA) and never a stub.
 
-        The mirror uses the SAME contact as the source when that contact can be
-        used in target_company: a shared contact (no company) or one of the
-        official company. Searching by VAT first used to return the first
-        contact with that VAT, e.g. the first branch of a group sharing one VAT
-        (Wonders - SALAMEH JBEIL -> Wonders - ADMA), a child contact or a
-        duplicate. If the contact is not available in the official company yet
-        (company_ids, from nv_pr_prunelle when installed), it is added there.
+        The contact must be available in target_company:
+        - its Company is empty or target_company;
+        - its companies (company_ids, nv_pr_prunelle) are empty (all
+          companies) or include target_company - they are NOT completed by
+          the sync: the user adds the Official Books company to the contact.
+        Otherwise the sync stops with an error (the document is not mirrored,
+        the sync log shows why) until the contact is fixed.
 
-        A contact restricted to another company (company_id) is matched among
-        the official company's and shared contacts by VAT and name, then by
-        name, else a stub is created.
-
-        With create=False (preview of the Fix Mirror Partners wizard) nothing
-        is written: no company added, no stub created (an empty recordset is
-        returned instead).
+        With create=False (previews, reconciliation copy) nothing is raised:
+        an empty recordset is returned for a contact not available there.
         """
         Partner = self.env['res.partner'].sudo()
         if not partner:
             return Partner
         partner = partner.sudo()
-        if not partner.company_id or partner.company_id == target_company:
-            if (
-                create
-                and 'company_ids' in partner._fields
-                and partner.company_ids
-                and target_company not in partner.company_ids
-            ):
-                partner.company_ids = [(4, target_company.id)]
-            return partner
-
-        domain = [
-            ('company_id', 'in', (target_company.id, False)),
-            ('active', 'in', [True, False]),
-        ]
-        match = Partner
-        if partner.vat:
-            match = Partner.search(domain + [
-                ('vat', '=', partner.vat), ('name', '=ilike', partner.name),
-            ], limit=1)
-        match = match or Partner.search(domain + [('name', '=ilike', partner.name)], limit=1)
-        if match or not create:
-            return match
-
-        _logger.warning(
-            "nv_dual_bookkeeping: Partner '%s' (id=%s) not found in company '%s'. "
-            "Creating a mirror stub partner.",
-            partner.name, partner.id, target_company.name,
+        available = (
+            (not partner.company_id or partner.company_id == target_company)
+            and (
+                'company_ids' not in partner._fields
+                or not partner.company_ids
+                or target_company in partner.company_ids
+            )
         )
-        return self.env['res.partner'].sudo().with_company(target_company).create({
-            'name': partner.name,
-            'vat': partner.vat,
-            'email': partner.email,
-            'phone': partner.phone,
-            'street': partner.street,
-            'city': partner.city,
-            'country_id': partner.country_id.id if partner.country_id else False,
-            'comment': _(
-                "Auto-created by NV Dual Bookkeeping sync engine as a mirror of "
-                "partner id=%d from company '%s'."
-            ) % (partner.id, partner.company_id.name if partner.company_id else '?'),
-        })
+        if available:
+            return partner
+        if not create:
+            return Partner
+        raise UserError(_(
+            "The contact '%(partner)s' is not available in '%(company)s': add "
+            "'%(company)s' to its companies (and leave its Company empty), then "
+            "retry the sync.",
+            partner=partner.display_name, company=target_company.name,
+        ))
 
     # =========================================================================
     # Repair: partners of existing mirrors (Fix Mirror Partners wizard)

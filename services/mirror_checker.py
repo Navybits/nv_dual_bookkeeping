@@ -376,13 +376,9 @@ class NvMirrorChecker(models.AbstractModel):
         return not record.company_id or record.company_id == official_co
 
     def _same_partner(self, partner, mirror_partner, official_co):
-        if not partner or self._shared_or_official(partner, official_co):
-            return partner == mirror_partner
-        return (
-            bool(mirror_partner)
-            and (mirror_partner.name or '').lower() == (partner.name or '').lower()
-            and (mirror_partner.vat or False) == (partner.vat or False)
-        )
+        """The mirror has the same contact (same partner_id): the sync never
+        uses another contact (nv.sync.engine._map_partner)."""
+        return partner == mirror_partner
 
     def _same_by_name(self, record, mirror_record, official_co):
         if not record or self._shared_or_official(record, official_co):
