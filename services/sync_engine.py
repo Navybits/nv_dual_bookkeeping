@@ -1031,8 +1031,13 @@ class NvSyncEngine(models.AbstractModel):
         position comes first: entries are copied line by line, in order.
         Empty when no line copies it (never another customer's line)."""
         Line = self.env['account.move.line']
+        # customer / vendor lines, and every line Odoo can match: accounts that
+        # allow reconciliation and cash / bank lines (an entry and its
+        # reversal are matched there too)
         candidates = mirror_move.line_ids.filtered(
-            lambda l: l.account_id.account_type in RECONCILABLE_TYPES)
+            lambda l: l.account_id.account_type in RECONCILABLE_TYPES
+            or l.account_id.reconcile
+            or l.account_id.account_type in ('asset_cash', 'liability_credit_card'))
         if not candidates or not source_line:
             return Line
         code = source_line.account_id.with_company(source_line.company_id).code

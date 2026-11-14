@@ -79,6 +79,31 @@ class TestReconcileLines(DualBookkeepingCommon):
         self.assertEqual(self._mirror_pairs(mirror), {(self.partner_c.name, self.partner_c.name)})
         self.assertEqual(self._line(mirror, self.partner_b).amount_residual, 50.0)
 
+    def test_reversal_matched_on_cash_lines_too(self):
+        """An entry and its reversal are matched on their cash lines in the
+        operating company (Odoo's reversal): the same match in the Official
+        Books (only customer / vendor lines were copied before)."""
+        cash = self.company_data["default_journal_bank"].default_account_id
+        self.assertEqual(cash.account_type, "asset_cash")
+        move = self._env_for(self.accountant)["account.move"].create({
+            "move_type": "entry", "date": "2026-01-10", "journal_id": self.misc_journal.id,
+            "rate_main_second": RATE, "is_official": True,
+            "line_ids": [
+                Command.create({"name": "to cash", "account_id": cash.id, "debit": 140.16}),
+                Command.create({"name": "from", "account_id": self.company_data["default_account_revenue"].id,
+                                "credit": 140.16}),
+            ],
+        })
+        move.action_post()
+        reversal = move._reverse_moves([{"date": move.date}], cancel=True)
+        main_cash = (move | reversal).line_ids.filtered(lambda l: l.account_id == cash)
+        self.assertTrue(all(main_cash.mapped("reconciled")), "matched in the operating company")
+
+        mirror_cash = (self._mirror(move) | self._mirror(reversal)).line_ids.filtered(
+            lambda l: l.account_id.account_type == "asset_cash")
+        self.assertEqual(len(mirror_cash), 2)
+        self.assertTrue(all(mirror_cash.mapped("reconciled")), "and matched the same way in the Official Books")
+
     def test_relink_repairs_wrong_copies(self):
         """A copy made by the old code (C's payment on A's line) is removed
         and C's payment is matched with C's line again."""
