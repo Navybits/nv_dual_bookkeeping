@@ -692,6 +692,21 @@ class AccountMove(models.Model):
             reconcile_flag = self.env.context.get('nv_reconcile_is_official')
             company = (self.env['res.company'].browse(vals['company_id'])
                        if vals.get('company_id') else self.env.company)
+            journal = self.env['account.journal'].browse(vals.get('journal_id') or [])
+            if (
+                journal
+                and journal == journal.company_id.sudo().currency_exchange_journal_id
+                and not journal.company_id.is_official_company
+                # a reversal keeps the flag of the entry it reverses: the
+                # reversal of an old mirrored (Official) exchange entry must
+                # reverse its mirror too (sync_move)
+                and not vals.get('reversed_entry_id')
+            ):
+                # exchange difference entries of an operating company are
+                # always Non-Official (never mirrored, see _nv_is_exchange_entry),
+                # whatever the default Official setting
+                vals['is_official'] = False
+                vals['is_official_set'] = True
             if (
                 reconcile_flag is not None and 'is_official' not in vals
                 and not company.is_official_company
@@ -855,6 +870,17 @@ class AccountMove(models.Model):
     # -------------------------------------------------------------------------
     # Life-cycle of the mirror (D2)
     # -------------------------------------------------------------------------
+
+    def _nv_is_exchange_entry(self):
+        """An entry of its company's Exchange Difference journal (Odoo's and
+        nv_double_currencies' exchange difference entries) - never mirrored.
+        Except the reversal of an exchange entry that was mirrored (before
+        this rule): it is mirrored, so its mirror is reversed too."""
+        self.ensure_one()
+        if self.reversed_entry_id and self.reversed_entry_id.sudo().nv_mirror_move_id:
+            return False
+        return bool(self.journal_id) and (
+            self.journal_id == self.company_id.sudo().currency_exchange_journal_id)
 
     def _nv_mirrored(self):
         """The sources in self that have a mirror (sudo: the link points to

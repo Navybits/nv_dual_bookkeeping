@@ -9,3 +9,4 @@ from . import test_mirror_check
 from . import test_reconcile_lines
 from . import test_entry_flag
 from . import test_reconcile_write_off
+from . import test_exchange_entries

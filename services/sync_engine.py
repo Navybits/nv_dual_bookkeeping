@@ -50,6 +50,11 @@ class NvSyncEngine(models.AbstractModel):
             and not source_move.is_mirror
             and source_move.state == 'posted'
             and source_move.company_id.official_company_id
+            # exchange difference entries are never mirrored: the official
+            # company makes its own when it reconciles the mirrors (a copy
+            # counted the difference twice, and copied the differences of
+            # Non-Official invoices)
+            and not source_move._nv_is_exchange_entry()
         ):
             return None
         operation = 'update' if source_move.sudo().nv_mirror_move_id else 'create'
