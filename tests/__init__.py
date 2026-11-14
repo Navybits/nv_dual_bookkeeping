@@ -10,3 +10,4 @@ from . import test_reconcile_lines
 from . import test_entry_flag
 from . import test_reconcile_write_off
 from . import test_exchange_entries
+from . import test_auto_reconcile_streams

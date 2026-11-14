@@ -4,3 +4,4 @@ from . import nv_official_change_wizard
 from . import nv_mirror_partner_fix_wizard
 from . import nv_mirror_check_wizard
 from . import account_reconcile_wizard
+from . import account_auto_reconcile_wizard
