@@ -104,6 +104,29 @@ class TestReconcileLines(DualBookkeepingCommon):
         self.assertEqual(len(mirror_cash), 2)
         self.assertTrue(all(mirror_cash.mapped("reconciled")), "and matched the same way in the Official Books")
 
+    def test_rewrite_takes_the_source_due_account(self):
+        """A bill whose mirror has another payable account (the partner's
+        account differed in the official company): the rewrite gives the
+        mirror the source's payable account (Odoo kept the mirror's old one)."""
+        bill = self._invoice(move_type="in_invoice", post=True)
+        mirror = self._mirror(bill)
+        payable = bill.line_ids.filtered(lambda l: l.display_type == "payment_term").account_id
+        other = self.env["account.account"].sudo().create({
+            "name": "Old payable", "code": "401999", "account_type": "liability_payable",
+            "reconcile": True, "company_ids": self.official.ids})
+        mirror_term = mirror.line_ids.filtered(lambda l: l.display_type == "payment_term")
+        self.env.cr.execute("UPDATE account_move_line SET account_id = %s WHERE id IN %s",
+                            [other.id, tuple(mirror_term.ids)])
+        mirror_term.invalidate_recordset(["account_id"])
+        self.assertEqual(mirror_term.account_id, other)
+
+        self.env["nv.sync.engine"].repair_mirror(bill, "rewrite")
+        mirror = self._mirror(bill)
+        term = mirror.line_ids.filtered(lambda l: l.display_type == "payment_term")
+        self.assertEqual(term.account_id.with_company(self.official).code,
+                         payable.with_company(self.company).code)
+        self.assertEqual(mirror.state, "posted")
+
     def test_relink_repairs_wrong_copies(self):
         """A copy made by the old code (C's payment on A's line) is removed
         and C's payment is matched with C's line again."""

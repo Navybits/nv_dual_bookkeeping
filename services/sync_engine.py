@@ -382,6 +382,7 @@ class NvSyncEngine(models.AbstractModel):
             mirror_move = self._create_mirror_payment(source_move, official_co, official_journal)
         else:
             mirror_move = self._create_mirror_entry(source_move, official_co, official_journal)
+        self._align_term_accounts(source_move, mirror_move, official_co)
         source_sudo.write({'nv_mirror_move_id': mirror_move.id, 'nv_mirror_outdated': False})
         self._post_mirror(mirror_move)
 
@@ -399,6 +400,24 @@ class NvSyncEngine(models.AbstractModel):
             su=True,
             context=dict(self.env.context, allowed_company_ids=official_co.ids),
         )
+
+    def _align_term_accounts(self, source_move, mirror_move, official_co):
+        """Invoices / bills: the receivable / payable (due) lines of the mirror
+        take the account of the source's due lines (same code). Odoo computes
+        that account itself, first from the account the move's due lines
+        already had: a rewritten mirror kept its old account, and a new mirror
+        took the partner's account in the official company, which can differ
+        from the operating company's."""
+        if not source_move.is_invoice(include_receipts=True) or mirror_move.state != 'draft':
+            return
+        accounts = source_move.line_ids.filtered(lambda l: l.display_type == 'payment_term').account_id
+        if len(accounts) != 1:
+            return
+        target = self._get_mirror_account(accounts, official_co)
+        terms = mirror_move.line_ids.filtered(
+            lambda l: l.display_type == 'payment_term' and l.account_id != target)
+        if terms:
+            terms.with_context(skip_invoice_sync=True).write({'account_id': target.id})
 
     def _post_mirror(self, mirror_move):
         """Payment mirrors are always posted; other mirrors when "Auto-post
