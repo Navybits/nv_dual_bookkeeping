@@ -358,16 +358,19 @@ class AccountMove(models.Model):
                 ))
 
     def _nv_entry_flag_confirmed(self):
-        """A manual journal entry needs no toggle click before posting when it
-        is Official (the default is Non-Official: someone chose it) or when
-        its customers / vendors confirm its type."""
+        """A manual journal entry / payment needs no toggle click before
+        posting: the toggle as shown is used - Official (copied to the
+        Official Books) or Non-Official (Main only), also without a customer.
+        Only an entry whose customers / vendors are Official while it is
+        Non-Official still asks for it (they must have the same type)."""
         self.ensure_one()
         if self.move_type != 'entry' or self.company_id.is_official_company:
             return False
-        if self.is_official:
+        if self.is_official or self.origin_payment_id:
+            # Payments: the toggle as shown is used, whatever the customer.
             return True
         partners = self._nv_entry_partner_lines().partner_id
-        return bool(partners) and not any(partners.mapped('is_official'))
+        return not any(partners.mapped('is_official'))
 
     # -------------------------------------------------------------------------
     # Sequence overrides (Odoo 19 native sequence.mixin)
