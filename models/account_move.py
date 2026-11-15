@@ -681,6 +681,21 @@ class AccountMove(models.Model):
     # Create override — set is_official from partner when creating from SO/PO
     # -------------------------------------------------------------------------
 
+    @api.model
+    def _nv_deferral_originals(self, vals):
+        """The invoices / bills of a deferral entry being created (the
+        deferred_original_move_ids commands of its values)."""
+        ids = []
+        for command in vals.get('deferred_original_move_ids') or []:
+            if isinstance(command, (list, tuple)):
+                if command[0] == 6:
+                    ids += list(command[2])
+                elif command[0] == 4:
+                    ids.append(command[1])
+            elif isinstance(command, int):
+                ids.append(command)
+        return self.browse(ids).sudo()
+
     @api.model_create_multi
     def create(self, vals_list):
         """D7: only the web form sends is_official_set (a field of the form,
@@ -717,6 +732,11 @@ class AccountMove(models.Model):
                 # write-off / transfer of the reconcile screen: the flag of
                 # the lines it closes (wizard/account_reconcile_wizard.py)
                 vals['is_official'] = reconcile_flag
+            originals = self._nv_deferral_originals(vals)
+            if originals and not company.is_official_company:
+                # a deferral entry has the type of its invoice / bill: only
+                # an Official one's are mirrored
+                vals['is_official'] = originals[:1].is_official
             if 'is_official' not in vals and not self.env.company.is_official_company:
                 partner_id = vals.get('partner_id')
                 if partner_id:
@@ -885,13 +905,26 @@ class AccountMove(models.Model):
         return bool(self.journal_id) and (
             self.journal_id == self.company_id.sudo().currency_exchange_journal_id)
 
-    def _nv_is_deferral_entry(self):
-        """A deferral entry of an invoice / bill (account_accountant) - never
-        mirrored: the official company generates its own from the mirror
-        invoice, linked to it (a copy doubled them, unlinked)."""
-        self.ensure_one()
-        return 'deferred_original_move_ids' in self._fields and bool(
-            self.sudo().deferred_original_move_ids)
+    # Deferral entries (account_accountant): Main is the only source. Its
+    # deferral entries are mirrored like any entry and linked to the mirror
+    # invoice (sync_engine._link_deferrals); a mirror invoice generates none
+    # of its own (they doubled), and its reset leaves them to their sources.
+
+    def _generate_deferred_entries(self):
+        """EXTENDS account_accountant: no own deferral entries for a mirror
+        invoice - the mirrors of its source's deferral entries are linked to
+        it."""
+        if self.is_mirror:
+            return
+        return super()._generate_deferred_entries()
+
+    def _unlink_or_reverse(self):
+        """EXTENDS account: the reset of a mirror invoice (context set by the
+        sync engine) leaves its deferral entries alone - they are mirrors,
+        reset / deleted / reversed with their sources (else reversed twice)."""
+        if self.env.context.get('nv_mirror_keep_deferrals'):
+            self = self.filtered(lambda m: not (m.is_mirror and m.deferred_original_move_ids))
+        return super()._unlink_or_reverse()
 
     def _nv_mirrored(self):
         """The sources in self that have a mirror (sudo: the link points to

@@ -227,5 +227,8 @@ class TestMirrorFields(DualBookkeepingCommon):
         mirror_line = self._mirror(invoice).invoice_line_ids
         self.assertEqual(str(mirror_line.deferred_start_date), "2026-01-01")
         self.assertEqual(str(mirror_line.deferred_end_date), "2026-12-31")
-        self.assertTrue(self._mirror(invoice).deferred_move_ids,
-                        "the official company generates the mirror's deferral entries")
+        self.assertEqual(
+            self._mirror(invoice).deferred_move_ids,
+            invoice.deferred_move_ids.sudo().nv_mirror_move_id,
+            "the mirror generates no deferral entries of its own: Main's are "
+            "mirrored and linked to it (test_deferral_entries)")

@@ -63,8 +63,7 @@ class NvMirrorCheckWizard(models.TransientModel):
     def _sources(self):
         """Exchange difference entries are left out: never mirrored (the
         official company makes its own)."""
-        return self._nv_sources().filtered(
-            lambda m: not m._nv_is_exchange_entry() and not m._nv_is_deferral_entry())
+        return self._nv_sources().filtered(lambda m: not m._nv_is_exchange_entry())
 
     def _nv_sources(self):
         if self.source_move_ids:

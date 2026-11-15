@@ -55,9 +55,6 @@ class NvSyncEngine(models.AbstractModel):
             # counted the difference twice, and copied the differences of
             # Non-Official invoices)
             and not source_move._nv_is_exchange_entry()
-            # deferral entries neither: the official company generates its
-            # own from the mirror invoice, linked to it
-            and not source_move._nv_is_deferral_entry()
         ):
             return None
         operation = 'update' if source_move.sudo().nv_mirror_move_id else 'create'
@@ -387,6 +384,7 @@ class NvSyncEngine(models.AbstractModel):
             mirror_move = self._create_mirror_entry(source_move, official_co, official_journal)
         self._align_term_accounts(source_move, mirror_move, official_co)
         source_sudo.write({'nv_mirror_move_id': mirror_move.id, 'nv_mirror_outdated': False})
+        self._link_deferrals(source_move, mirror_move)
         self._post_mirror(mirror_move)
 
         # ------------------------------------------------------------------
@@ -395,6 +393,22 @@ class NvSyncEngine(models.AbstractModel):
         self._sync_existing_reconciliations(source_move, mirror_move, official_co)
 
         return mirror_move
+
+    def _link_deferrals(self, source_move, mirror_move):
+        """Deferral entries (account_accountant): the mirror of a deferral
+        entry is linked to the mirror of its invoice / bill, and a mirror
+        invoice to the mirrors of its source's deferral entries (Odoo posts
+        them before the invoice is mirrored) - as in Main."""
+        if 'deferred_original_move_ids' not in source_move._fields:
+            return
+        source = source_move.sudo()
+        mirror = mirror_move.sudo()
+        originals = source.deferred_original_move_ids.nv_mirror_move_id
+        if originals and originals != mirror.deferred_original_move_ids:
+            mirror.deferred_original_move_ids = [Command.set(originals.ids)]
+        deferrals = source.deferred_move_ids.nv_mirror_move_id - mirror.deferred_move_ids
+        if deferrals:
+            mirror.deferred_move_ids = [Command.link(move.id) for move in deferrals]
 
     def _mirror_env(self, official_co):
         """The environment the mirrors are written in: sudo (the user may have
@@ -831,7 +845,8 @@ class NvSyncEngine(models.AbstractModel):
         if mirror_move.state == 'posted':
             self._remove_mirror_reconciliations(mirror_move)
         if mirror_move.state in ('posted', 'cancel'):
-            mirror_move.button_draft()
+            # its deferral entries are mirrors: they follow their sources
+            mirror_move.with_context(nv_mirror_keep_deferrals=True).button_draft()
 
     def _cancel(self, source_move):
         mirror_move = source_move.sudo().nv_mirror_move_id
