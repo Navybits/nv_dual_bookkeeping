@@ -885,6 +885,14 @@ class AccountMove(models.Model):
         return bool(self.journal_id) and (
             self.journal_id == self.company_id.sudo().currency_exchange_journal_id)
 
+    def _nv_is_deferral_entry(self):
+        """A deferral entry of an invoice / bill (account_accountant) - never
+        mirrored: the official company generates its own from the mirror
+        invoice, linked to it (a copy doubled them, unlinked)."""
+        self.ensure_one()
+        return 'deferred_original_move_ids' in self._fields and bool(
+            self.sudo().deferred_original_move_ids)
+
     def _nv_mirrored(self):
         """The sources in self that have a mirror (sudo: the link points to
         the official company)."""

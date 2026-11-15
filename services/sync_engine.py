@@ -55,6 +55,9 @@ class NvSyncEngine(models.AbstractModel):
             # counted the difference twice, and copied the differences of
             # Non-Official invoices)
             and not source_move._nv_is_exchange_entry()
+            # deferral entries neither: the official company generates its
+            # own from the mirror invoice, linked to it
+            and not source_move._nv_is_deferral_entry()
         ):
             return None
         operation = 'update' if source_move.sudo().nv_mirror_move_id else 'create'
