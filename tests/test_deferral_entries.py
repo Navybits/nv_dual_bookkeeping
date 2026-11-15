@@ -54,6 +54,15 @@ class TestDeferralEntries(DualBookkeepingCommon):
         self.assertEqual(self._summary(mirrors), self._summary(source_deferrals))
         for deferral in mirrors:
             self.assertEqual(deferral.deferred_original_move_ids, mirror)
+        for source in source_deferrals.sudo():
+            copy = source.nv_mirror_move_id
+            self.assertTrue(source.rate_main_second, "Main's deferral entry has the LBP rate")
+            self.assertEqual(copy.rate_main_second, source.rate_main_second,
+                             "the copy has the rate of Main's deferral entry")
+            self.assertEqual(
+                sorted(round(l.second_currency_amount, 2) for l in copy.line_ids),
+                sorted(round(l.second_currency_amount, 2) for l in source.line_ids),
+                "the copy has the LBP amounts of Main's deferral entry")
         self.assertEqual(self._official_deferrals().filtered(lambda m: m.state == "posted"), mirrors,
                          "no deferral entry of its own in the Official Books")
 

@@ -913,10 +913,19 @@ class AccountMove(models.Model):
     def _generate_deferred_entries(self):
         """EXTENDS account_accountant: no own deferral entries for a mirror
         invoice - the mirrors of its source's deferral entries are linked to
-        it."""
+        it. nv_double_currencies sets the LBP rate of the deferral entries
+        after Odoo posted them, so after they were mirrored: their mirrors get
+        the same rate."""
         if self.is_mirror:
             return
-        return super()._generate_deferred_entries()
+        result = super()._generate_deferred_entries()
+        engine = self.env['nv.sync.engine']
+        for deferral in self.deferred_move_ids.sudo().filtered('nv_mirror_move_id'):
+            mirror = deferral.nv_mirror_move_id
+            if deferral.rate_main_second and mirror.rate_main_second != deferral.rate_main_second:
+                mirror.with_env(engine._mirror_env(mirror.company_id)).update_second_currency_rate(
+                    deferral.rate_main_second)
+        return result
 
     def _unlink_or_reverse(self):
         """EXTENDS account: the reset of a mirror invoice (context set by the
