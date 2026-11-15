@@ -58,11 +58,13 @@
                         class="btn btn-secondary"
                         invisible="not is_official or is_mirror or state not in ('in_process', 'paid') or sync_state == 'synced' or not company_official_company_id"
                         groups="nv_dual_bookkeeping.group_sync_manager"/>
+                <!-- "Change to Non-Official" hidden (2026-11-15). To show it again, invisible was:
+                     not is_official or is_mirror or state not in ('in_process', 'paid') or company_is_official_company -->
                 <button name="action_change_to_non_official"
                         type="object"
                         string="Change to Non-Official"
                         class="btn btn-secondary"
-                        invisible="not is_official or is_mirror or state not in ('in_process', 'paid') or company_is_official_company"
+                        invisible="1"
                         groups="account.group_account_manager"/>
                 <button name="action_compare_with_mirror"
                         type="object"
