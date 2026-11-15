@@ -55,7 +55,10 @@ class NvMirrorPartnerFixWizard(models.TransientModel):
         ]
         if self.source_move_ids:
             domain.append(('id', 'in', self.source_move_ids.ids))
-        return self.env['account.move'].sudo().search(domain)
+        # exchange difference entries are never mirrored (the official
+        # company makes its own): old copies are left as they are
+        return self.env['account.move'].sudo().search(domain).filtered(
+            lambda m: not m._nv_is_exchange_entry())
 
     def action_find(self):
         """List the mirrors whose partners differ from their source's."""

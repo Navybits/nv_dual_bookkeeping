@@ -77,6 +77,21 @@ class TestExchangeEntries(DualBookkeepingCommon):
         self.assertAlmostEqual(sum(receivable.mapped("balance")), 0.0,
                                msg="the copy and its reversal cancel out in the Official Books")
 
+    def test_old_mirrored_exchange_entry_not_in_fix_mirror_partners(self):
+        """An old exchange entry copied before this rule (e.g. of a P2
+        invoice, its copy zeroed) is left out of Fix Mirror Partners, as of
+        Compare with Mirror: it showed as "Cannot Fix"."""
+        move = self._exchange_entry()
+        self.env.cr.execute("UPDATE account_move SET is_official = TRUE WHERE id = %s", [move.id])
+        move.invalidate_recordset(["is_official"])
+        mirror = self.env["nv.sync.engine"]._do_sync(move)  # as the old sync did
+        self.env.cr.execute("UPDATE account_move_line SET partner_id = %s WHERE move_id = %s AND partner_id IS NOT NULL",
+                            [self.partner_b.id, mirror.id])
+        self.env.invalidate_all()
+        wizard = self.env["nv.mirror.partner.fix.wizard"].sudo().with_company(self.company).create({})
+        wizard.action_find()
+        self.assertNotIn(move, wizard.line_ids.source_move_id)
+
     def test_paid_invoice_one_exchange_entry_per_book(self):
         invoice = self._invoice(post=True)
         self._pay(invoice, rate_main_second=RATE + 500.0)
