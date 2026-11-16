@@ -188,6 +188,24 @@ class TestLifecycle(DualBookkeepingCommon):
         self.assertEqual(mirror_payment.state, "canceled")
         self.assertEqual(mirror_payment.move_id.state, "cancel")
 
+    def test_payment_draft_mirror_not_marked_outdated_posted_again(self):
+        """A payment reset without its mirror being marked outdated (both left
+        in draft, e.g. CSH44/1/26/000017): posting it again rewrites and posts
+        the mirror instead of skipping it as up to date."""
+        payment = self._payment(user=self.no_accountant)
+        mirror_payment = self._mirror(payment.move_id).origin_payment_id
+        payment.action_draft()
+        self.assertEqual(mirror_payment.state, "draft")
+        payment.move_id.sudo().nv_mirror_outdated = False  # as on staging
+        vals = {"amount": 150.0}
+        if "partner_amount" in payment._fields:
+            vals["partner_amount"] = 150.0
+        payment.write(vals)
+        payment.action_post()
+        self.assertEqual(mirror_payment.move_id.state, "posted")
+        self.assertEqual(mirror_payment.amount, 150.0)
+        self.assertEqual(mirror_payment.move_id.name, payment.move_id.name)
+
     def test_payment_delete(self):
         payment = self._payment(user=self.no_accountant)
         mirror_payment = self._mirror(payment.move_id).origin_payment_id

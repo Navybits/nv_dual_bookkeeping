@@ -364,7 +364,13 @@ class NvSyncEngine(models.AbstractModel):
 
         source_sudo = source_move.sudo()
         mirror_move = source_sudo.nv_mirror_move_id
-        if mirror_move and not source_sudo.nv_mirror_outdated:
+        # a posted source whose mirror was left in draft without being marked
+        # outdated (e.g. both were drafts) is rewritten and posted, not skipped
+        stale_draft = (
+            mirror_move and source_move.state == 'posted' and mirror_move.state == 'draft'
+            and (source_move.origin_payment_id or self._auto_post_enabled())
+        )
+        if mirror_move and not source_sudo.nv_mirror_outdated and not stale_draft:
             # up to date (a manual retry): only its reconciliations follow
             self._sync_existing_reconciliations(source_move, mirror_move, official_co)
             return mirror_move
@@ -444,12 +450,14 @@ class NvSyncEngine(models.AbstractModel):
         if mirror_move.origin_payment_id:
             mirror_move.origin_payment_id.action_post()
             return
-        auto_post = self.env['ir.config_parameter'].sudo().get_param(
-            'nv_dual_bookkeeping.auto_post_mirror', 'False'
-        ).strip().lower() in ('true', '1')
-        if auto_post:
+        if self._auto_post_enabled():
             mirror_move.action_post()
             _logger.info("nv_dual_bookkeeping: Mirror entry %s auto-posted.", mirror_move.name)
+
+    def _auto_post_enabled(self):
+        return self.env['ir.config_parameter'].sudo().get_param(
+            'nv_dual_bookkeeping.auto_post_mirror', 'False'
+        ).strip().lower() in ('true', '1')
 
     # =========================================================================
     # Mirror creation / rewrite — plain entry / invoice
