@@ -558,6 +558,7 @@ class NvSyncEngine(models.AbstractModel):
                     'currency_id': line.currency_id.id,
                     'partner_id': mp.id if mp else False,
                     'display_type': line.display_type,
+                    'date_maturity': line.date_maturity,
                     # ── nv_double_currencies line fields ─────────────────────
                     # second_currency_amount / rate_main_second_line: copied
                     # directly from source so second_currency_total sums to 0

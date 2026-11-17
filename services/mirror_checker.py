@@ -144,8 +144,12 @@ class NvMirrorChecker(models.AbstractModel):
                 add(payment._fields[name].get_description(self.env)['string'], payment[name], mirror_payment[name], name)
         if not self._same_partner(payment.partner_id, mirror_payment.partner_id, official_co):
             add(_("Partner"), payment.partner_id, mirror_payment.partner_id, 'partner')
-        if mirror_payment.journal_id != payment.journal_id.official_journal_id:
-            add(_("Journal"), payment.journal_id.official_journal_id or payment.journal_id, mirror_payment.journal_id)
+        # the mirror follows the journal of the source's entry (whose number it
+        # keeps), not the payment's: a payment moved to another journal after
+        # posting keeps its entry, number included, in the old one
+        source_journal = payment.move_id.journal_id or payment.journal_id
+        if mirror_payment.journal_id != source_journal.official_journal_id:
+            add(_("Journal"), source_journal.official_journal_id or source_journal, mirror_payment.journal_id)
         if payment.payment_method_line_id.name != mirror_payment.payment_method_line_id.name:
             add(_("Payment Method"), payment.payment_method_line_id.name, mirror_payment.payment_method_line_id.name)
         for name in ('receivable_payable_account_id', 'destination_account_id'):
