@@ -217,6 +217,8 @@ class NvMirrorChecker(models.AbstractModel):
         def per_account(move, company):
             result = {}
             for line in move.line_ids:
+                if not line.account_id:  # section / note lines: no account, no amount
+                    continue
                 code = line.account_id.with_company(company).code or line.account_id.display_name
                 values = result.setdefault(code, [0.0, 0.0])
                 values[0] += line.balance
