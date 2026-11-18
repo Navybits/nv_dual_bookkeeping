@@ -63,12 +63,15 @@ class ResCurrencyRate(models.Model):
         return result
 
     def unlink(self):
+        if self.env.context.get('nv_rate_sync'):
+            return super().unlink()
         to_remove = self.env['res.currency.rate']
-        if not self.env.context.get('nv_rate_sync'):
-            for rate in self:
-                official = rate._nv_official_company()
-                if official:
-                    to_remove |= self._nv_official_rate(official, rate.currency_id, rate.name)
+        for rate in self:
+            official = rate._nv_official_company()
+            if official:
+                to_remove |= self._nv_official_rate(official, rate.currency_id, rate.name)
+        to_remove -= self  # never the rates being deleted themselves
         result = super().unlink()
-        to_remove.with_context(nv_rate_sync=True).unlink()
+        if to_remove:
+            to_remove.with_context(nv_rate_sync=True).unlink()
         return result
