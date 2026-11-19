@@ -1,6 +1,6 @@
 {
     'name': 'NV Dual Bookkeeping',
-    'version': '19.0.1.0.6',
+    'version': '19.0.1.0.7',
     'summary': 'Official / Non-Official dual-sequence bookkeeping for Lebanese companies',
     'author': 'Navybits',
     'license': 'OPL-1',

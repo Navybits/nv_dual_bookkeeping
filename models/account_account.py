@@ -26,13 +26,18 @@ class AccountAccount(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
-        accounts = super().create(vals_list)
+        # The form's per-company codes (code_mapping_ids) write the code of
+        # each company during the create: those writes must not copy to
+        # S.A.L. too (it made a second, code-less account). Copied once, below.
+        accounts = super(AccountAccount, self.with_context(nv_account_creating=True)).create(vals_list)
+        accounts = accounts.with_env(self.env)
         if not self.env.context.get('nv_account_sync'):
             accounts._nv_copy_to_official()
         return accounts
 
     def write(self, vals):
-        if self.env.context.get('nv_account_sync') or not SYNC_FIELDS & set(vals):
+        if (self.env.context.get('nv_account_sync') or self.env.context.get('nv_account_creating')
+                or not SYNC_FIELDS & set(vals)):
             return super().write(vals)
         # code of each account in its Main company before the change (to find
         # the S.A.L. account when the code itself is changed)
@@ -71,8 +76,10 @@ class AccountAccount(models.Model):
                 if not code or Account.with_company(official).search_count(
                         [('code', '=', code)], limit=1):
                     continue
-                Account.with_company(official).create(dict(
+                new = Account.with_company(official).create(dict(
                     account._nv_official_vals(),
                     code=code,
                     company_ids=[Command.set(official.ids)],
                 ))
+                if new.with_company(official).code != code:
+                    new.with_company(official).write({'code': code})
